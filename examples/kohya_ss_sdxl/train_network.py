@@ -1,49 +1,44 @@
-import importlib
 import argparse
+import importlib
+import json
 import math
 import os
-import sys
 import random
+import sys
 import time
-import json
 from multiprocessing import Value
-import toml
 
+import library.config_util as config_util
+import library.custom_train_functions as custom_train_functions
+import library.train_util as train_util
+import toml
+from library.config_util import BlueprintGenerator, ConfigSanitizer
+from library.custom_train_functions import (  # get_weighted_text_embeddings,
+    add_v_prediction_like_loss,
+    apply_debiased_estimation,
+    apply_masked_loss,
+    apply_snr_weight,
+    prepare_scheduler_for_custom_training,
+    scale_v_prediction_loss_like_noise_prediction,
+)
+from library.train_util import DreamBoothDataset, freeze_params, set_seed
+from library.utils import add_logging_arguments, setup_logging
 from tqdm import tqdm
 
 import mindspore as ms
-from mindspore import ops, nn, Tensor
+from mindspore import Tensor, nn, ops
+from mindspore.amp import StaticLossScaler
 from mindspore.dataset import GeneratorDataset
+
+from mindone.diffusers import DDPMScheduler
+from mindone.diffusers.training_utils import AttrJitWrapper, TrainStep
+
 # from library.device_utils import init_ipex, clean_memory_on_device
 
 # init_ipex()
 
-from mindone.diffusers import DDPMScheduler
-from mindone.diffusers.training_utils import (
-    AttrJitWrapper,
-    TrainStep)
-from mindspore.amp import StaticLossScaler
 # from library import deepspeed_utils, model_util
 
-import library.train_util as train_util
-from library.train_util import set_seed, freeze_params
-from library.train_util import DreamBoothDataset
-import library.config_util as config_util
-from library.config_util import (
-    ConfigSanitizer,
-    BlueprintGenerator,
-)
-import library.custom_train_functions as custom_train_functions
-from library.custom_train_functions import (
-    apply_snr_weight,
-    # get_weighted_text_embeddings,
-    prepare_scheduler_for_custom_training,
-    scale_v_prediction_loss_like_noise_prediction,
-    add_v_prediction_like_loss,
-    apply_debiased_estimation,
-    apply_masked_loss,
-)
-from library.utils import setup_logging, add_logging_arguments
 
 setup_logging()
 import logging
@@ -63,7 +58,14 @@ class NetworkTrainer:
 
     # TODO 他のスクリプトと共通化する
     def generate_step_logs(
-        self, args: argparse.Namespace, current_loss, avr_loss, lr_scheduler, keys_scaled=None, mean_norm=None, maximum_norm=None
+        self,
+        args: argparse.Namespace,
+        current_loss,
+        avr_loss,
+        lr_scheduler,
+        keys_scaled=None,
+        mean_norm=None,
+        maximum_norm=None,
     ):
         logs = {"loss/current": current_loss, "loss/average": avr_loss}
 
@@ -84,7 +86,8 @@ class NetworkTrainer:
                 logs["lr/unet"] = float(lrs[-1])  # may be same to textencoder
 
             if (
-                args.optimizer_type.lower().startswith("DAdapt".lower()) or args.optimizer_type.lower() == "Prodigy".lower()
+                args.optimizer_type.lower().startswith("DAdapt".lower())
+                or args.optimizer_type.lower() == "Prodigy".lower()
             ):  # tracking d*lr value of unet.
                 logs["lr/d*lr"] = (
                     lr_scheduler.optimizers[-1].param_groups[0]["d"] * lr_scheduler.optimizers[-1].param_groups[0]["lr"]
@@ -97,9 +100,13 @@ class NetworkTrainer:
 
             for i in range(idx, len(lrs)):
                 logs[f"lr/group{i}"] = float(lrs[i])
-                if args.optimizer_type.lower().startswith("DAdapt".lower()) or args.optimizer_type.lower() == "Prodigy".lower():
+                if (
+                    args.optimizer_type.lower().startswith("DAdapt".lower())
+                    or args.optimizer_type.lower() == "Prodigy".lower()
+                ):
                     logs[f"lr/d*lr/group{i}"] = (
-                        lr_scheduler.optimizers[-1].param_groups[i]["d"] * lr_scheduler.optimizers[-1].param_groups[i]["lr"]
+                        lr_scheduler.optimizers[-1].param_groups[i]["d"]
+                        * lr_scheduler.optimizers[-1].param_groups[i]["lr"]
                     )
 
         return logs
@@ -109,7 +116,7 @@ class NetworkTrainer:
 
     def load_target_model(self, args, weight_dtype):
         pass
-        
+
     def load_tokenizer(self, args):
         pass
 
@@ -137,7 +144,7 @@ class NetworkTrainer:
 
     def sample_images(self, args, epoch, global_step, vae, tokenizer, text_encoder, unet):
         pass
-        
+
     def train(self, args):
         session_id = random.randint(0, 2**32)
         training_started_at = time.time()
@@ -243,6 +250,7 @@ class NetworkTrainer:
         #     vae.set_use_memory_efficient_attention_xformers(args.xformers)
 
         # 差分追加学習のためにモデルを読み込む
+        # 加载lora模块
         sys.path.append(os.path.dirname(__file__))
         logger.info("import network module:", args.network_module)
         network_module = importlib.import_module(args.network_module)
@@ -260,7 +268,9 @@ class NetworkTrainer:
                 module, weights_sd = network_module.create_network_from_weights(
                     multiplier, weight_path, vae, text_encoder, unet, for_inference=True
                 )
-                module.merge_to(text_encoder, unet, weights_sd, weight_dtype) #, accelerator.device if args.lowram else "cpu")
+                module.merge_to(
+                    text_encoder, unet, weights_sd, weight_dtype
+                )  # , accelerator.device if args.lowram else "cpu")
 
             logger.info(f"all weights merged: {', '.join(args.base_weights)}")
 
@@ -283,7 +293,7 @@ class NetworkTrainer:
             args, unet, vae, tokenizers, text_encoders, train_dataset_group, weight_dtype
         )
 
-        # prepare network
+        # prepare network (准备lora)
         net_kwargs = {}
         if args.network_args is not None:
             for net_arg in args.network_args:
@@ -292,7 +302,9 @@ class NetworkTrainer:
 
         # if a new network is added in future, add if ~ then blocks for each network (;'∀')
         if args.dim_from_weights:
-            network, _ = network_module.create_network_from_weights(1, args.network_weights, vae, text_encoder, unet, **net_kwargs)
+            network, _ = network_module.create_network_from_weights(
+                1, args.network_weights, vae, text_encoder, unet, **net_kwargs
+            )
         else:
             if "dropout" not in net_kwargs:
                 # workaround for LyCORIS (;^ω^)
@@ -379,7 +391,9 @@ class NetworkTrainer:
             )
             trainable_params = network.prepare_optimizer_params(args.text_encoder_lr, args.unet_lr)
 
-        optimizer_name, optimizer_args, optimizer = train_util.get_optimizer(args, learning_rate=lr_scheduler, trainable_params=trainable_params)
+        optimizer_name, optimizer_args, optimizer = train_util.get_optimizer(
+            args, learning_rate=lr_scheduler, trainable_params=trainable_params
+        )
 
         # 実験的機能：勾配も含めたfp16/bf16学習を行う　モデル全体をfp16/bf16にする
         if args.full_fp16:
@@ -408,7 +422,9 @@ class NetworkTrainer:
             if t_enc.device.type != "cpu":
                 t_enc.to(dtype=te_weight_dtype)
                 # nn.Embedding not support FP8
-                t_enc.text_model.embeddings.to(dtype=(weight_dtype if te_weight_dtype != weight_dtype else te_weight_dtype))
+                t_enc.text_model.embeddings.to(
+                    dtype=(weight_dtype if te_weight_dtype != weight_dtype else te_weight_dtype)
+                )
 
         if args.gradient_checkpointing:
             # according to TI example in Diffusers, train is required
@@ -639,7 +655,7 @@ class NetworkTrainer:
             # conserving backward compatibility when using train_dataset_dir and reg_dataset_dir
             assert (
                 len(train_dataset_group.datasets) == 1
-            ), f"There should be a single dataset but {len(train_dataset_group.datasets)} found. This seems to be a bug. / データセットは1個だけ存在するはずですが、実際には{len(train_dataset_group.datasets)}個でした。プログラムのバグかもしれません。"
+            ), f"There should be a single dataset but {len(train_dataset_group.datasets)} found. This seems to be a bug./ データセットは1個だけ存在するはずですが、実際には{len(train_dataset_group.datasets)}個でした。プログラムのバグかもしれません。"
 
             dataset = train_dataset_group.datasets[0]
 
@@ -648,7 +664,10 @@ class NetworkTrainer:
             if use_dreambooth_method:
                 for subset in dataset.subsets:
                     info = reg_dataset_dirs_info if subset.is_reg else dataset_dirs_info
-                    info[os.path.basename(subset.image_dir)] = {"n_repeats": subset.num_repeats, "img_count": subset.img_count}
+                    info[os.path.basename(subset.image_dir)] = {
+                        "n_repeats": subset.num_repeats,
+                        "img_count": subset.img_count,
+                    }
             else:
                 for subset in dataset.subsets:
                     dataset_dirs_info[os.path.basename(subset.metadata_file)] = {
@@ -710,7 +729,11 @@ class NetworkTrainer:
         global_step = 0
 
         noise_scheduler = DDPMScheduler(
-            beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, clip_sample=False
+            beta_start=0.00085,
+            beta_end=0.012,
+            beta_schedule="scaled_linear",
+            num_train_timesteps=1000,
+            clip_sample=False,
         )
         prepare_scheduler_for_custom_training(noise_scheduler)
         if args.zero_terminal_snr:
@@ -753,7 +776,7 @@ class NetworkTrainer:
             network.save_weights(ckpt_file, save_dtype, metadata_to_save)
             if args.huggingface_repo_id is not None:
                 logger.warning("hugging face upload not supported yet")
-                
+
         def remove_model(old_ckpt_name):
             old_ckpt_file = os.path.join(args.output_dir, old_ckpt_name)
             if os.path.exists(old_ckpt_file):
@@ -763,14 +786,12 @@ class NetworkTrainer:
         # For --sample_at_first
         self.sample_images(args, 0, global_step, vae, tokenizer, text_encoder, unet)
 
-
         if args.weighted_captions:
             # TODO weighted captions
             # get_text_cond_fn = get_weighted_text_embeddings
             NotImplementedError("weighted_captions not supported yet")
         else:
             get_text_cond_fn = self.get_text_cond
-
 
         # initial a train_step_class for mindspore
         train_step = self.train_step_class(
@@ -794,9 +815,8 @@ class NetworkTrainer:
             current_epoch.value = epoch + 1
 
             metadata["ss_epoch"] = str(epoch + 1)
-            
-            for step, batch in enumerate(train_dataloader_iter):
 
+            for step, batch in enumerate(train_dataloader_iter):
                 # get multiplier for each sample
                 if network_has_multiplier:
                     multipliers = batch["network_multipliers"]
@@ -811,9 +831,7 @@ class NetworkTrainer:
                     # TODO weighted captions
                     NotImplementedError("weighted_captions not supported yet")
                 else:
-                    text_encoder_conds = self.get_text_cond(
-                        args, batch, tokenizers, text_encoders, weight_dtype
-                    )
+                    text_encoder_conds = self.get_text_cond(args, batch, tokenizers, text_encoders, weight_dtype)
                 if train_text_encoder:
                     text_encoder_conds = ops.stop_gradient(text_encoder_conds)
 
@@ -845,7 +863,9 @@ class NetworkTrainer:
 
                             remove_step_no = train_util.get_remove_step_no(args, global_step)
                             if remove_step_no is not None:
-                                remove_ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, remove_step_no)
+                                remove_ckpt_name = train_util.get_step_ckpt_name(
+                                    args, "." + args.save_model_as, remove_step_no
+                                )
                                 remove_model(remove_ckpt_name)
 
                 current_loss = loss.numpy().item()
@@ -858,7 +878,9 @@ class NetworkTrainer:
                     progress_bar.set_postfix(**{**max_mean_logs, **logs})
 
                 if args.logging_dir is not None:
-                    logs = self.generate_step_logs(args, current_loss, avr_loss, lr_scheduler, keys_scaled, mean_norm, maximum_norm)
+                    logs = self.generate_step_logs(
+                        args, current_loss, avr_loss, lr_scheduler, keys_scaled, mean_norm, maximum_norm
+                    )
                     # accelerator.log(logs, step=global_step)
 
                 if global_step >= args.max_train_steps:
@@ -867,7 +889,6 @@ class NetworkTrainer:
             if args.logging_dir is not None:
                 logs = {"loss/epoch": loss_recorder.moving_average}
                 # accelerator.log(logs, step=epoch + 1)
-
 
             # 指定エポックごとにモデルを保存
             if args.save_every_n_epochs is not None:
@@ -878,7 +899,9 @@ class NetworkTrainer:
 
                     remove_epoch_no = train_util.get_remove_epoch_no(args, epoch + 1)
                     if remove_epoch_no is not None:
-                        remove_ckpt_name = train_util.get_epoch_ckpt_name(args, "." + args.save_model_as, remove_epoch_no)
+                        remove_ckpt_name = train_util.get_epoch_ckpt_name(
+                            args, "." + args.save_model_as, remove_epoch_no
+                        )
                         remove_model(remove_ckpt_name)
 
                     if args.save_state:
@@ -912,7 +935,7 @@ class TrainStepForSDXLLoRA(TrainStep):
         length_of_dataloader,
         args,
         call_unet,
-        get_text_cond,        
+        get_text_cond,
     ):
         super().__init__(
             unet,
@@ -939,21 +962,21 @@ class TrainStepForSDXLLoRA(TrainStep):
         self.tokenizers = tokenizers
 
     def forward(
-            self, 
-            images, 
-            latents, 
-            original_sizes_hw, 
-            crop_top_lefts, 
-            target_sizes_hw, 
-            captions=None, # for weigted_captons, not implemented
-            input_ids=None,
-            input_ids2=None,
-            text_encoder_outputs1_list=None,
-            text_encoder_outputs2_list=None,
-            text_encoder_pool2_list=None,
-            conditioning_images=None,
-            loss_weights=1.0,
-            ):
+        self,
+        images,
+        latents,
+        original_sizes_hw,
+        crop_top_lefts,
+        target_sizes_hw,
+        captions=None,  # for weigted_captons, not implemented yet
+        input_ids=None,
+        input_ids2=None,
+        text_encoder_outputs1_list=None,
+        text_encoder_outputs2_list=None,
+        text_encoder_pool2_list=None,
+        conditioning_images=None,
+        loss_weights=1.0,
+    ):
         if latents is not None:
             latents = latents.to(dtype=self.weight_dtype)
         else:
@@ -965,16 +988,16 @@ class TrainStepForSDXLLoRA(TrainStep):
         latents = latents * self.vae_scale_factor
 
         text_encoder_conds = self.get_text_cond(
-            self.args, 
-            self.tokenizers, 
-            self.text_encoders, 
+            self.args,
+            self.tokenizers,
+            self.text_encoders,
             self.weight_dtype,
             input_ids,
             input_ids2,
             text_encoder_outputs1_list,
             text_encoder_outputs2_list,
             text_encoder_pool2_list,
-            )
+        )
 
         # Sample noise, sample a random timestep for each image, and add noise to the latents,
         # with noise offset and/or multires noise if specified
@@ -983,25 +1006,25 @@ class TrainStepForSDXLLoRA(TrainStep):
         )
 
         noise_pred = self.call_unet(
-                            self.args,
-                            self.unet,
-                            noisy_latents,
-                            timesteps,
-                            text_encoder_conds,
-                            original_sizes_hw,
-                            crop_top_lefts,
-                            target_sizes_hw,
-                            self.weight_dtype,
-                        )
+            self.args,
+            self.unet,
+            noisy_latents,
+            timesteps,
+            text_encoder_conds,
+            original_sizes_hw,
+            crop_top_lefts,
+            target_sizes_hw,
+            self.weight_dtype,
+        )
         if self.args.v_parameterization:
             # v-parameterization training
             target = self.noise_scheduler.get_velocity(latents, noise, timesteps)
         else:
             target = noise
-        
+
         loss = train_util.conditional_loss(
-        noise_pred.float(), target.float(), reduction="none", loss_type=self.args.loss_type, huber_c=huber_c
-    )
+            noise_pred.float(), target.float(), reduction="none", loss_type=self.args.loss_type, huber_c=huber_c
+        )
         if self.args.masked_loss:
             loss = apply_masked_loss(loss, conditioning_images)
         loss = loss.mean([1, 2, 3])
@@ -1009,20 +1032,20 @@ class TrainStepForSDXLLoRA(TrainStep):
         loss = loss * loss_weights
 
         if self.args.min_snr_gamma:
-            loss = apply_snr_weight(loss, timesteps, self.noise_scheduler, self.args.min_snr_gamma, self.args.v_parameterization)
+            loss = apply_snr_weight(
+                loss, timesteps, self.noise_scheduler, self.args.min_snr_gamma, self.args.v_parameterization
+            )
         if self.args.scale_v_pred_loss_like_noise_pred:
             loss = scale_v_prediction_loss_like_noise_prediction(loss, timesteps, self.noise_scheduler)
         if self.args.v_pred_like_loss:
             loss = add_v_prediction_like_loss(loss, timesteps, self.noise_scheduler, self.args.v_pred_like_loss)
         if self.args.debiased_estimation_loss:
             loss = apply_debiased_estimation(loss, timesteps, self.noise_scheduler)
-        
+
         loss = loss.mean()  # 平均なのでbatch_sizeで割る必要なし
         loss = self.scale_loss(loss)
 
         return loss, noise_pred
-    
-
 
 
 def setup_parser() -> argparse.ArgumentParser:
@@ -1050,14 +1073,14 @@ def setup_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument("--unet_lr", type=float, default=None, help="learning rate for U-Net / U-Netの学習率")
-    parser.add_argument("--text_encoder_lr", type=float, default=None, help="learning rate for Text Encoder / Text Encoderの学習率")
+    parser.add_argument(
+        "--text_encoder_lr", type=float, default=None, help="learning rate for Text Encoder / Text Encoderの学習率"
+    )
 
     parser.add_argument(
         "--network_weights", type=str, default=None, help="pretrained weights for network / 学習するネットワークの初期重み"
     )
-    parser.add_argument(
-        "--network_module", type=str, default=None, help="network module to train / 学習対象のネットワークのモジュール"
-    )
+    parser.add_argument("--network_module", type=str, default=None, help="network module to train / 学習対象のネットワークのモジュール")
     parser.add_argument(
         "--network_dim",
         type=int,
@@ -1139,7 +1162,3 @@ if __name__ == "__main__":
 
     trainer = NetworkTrainer()
     trainer.train(args)
-
-
-
-

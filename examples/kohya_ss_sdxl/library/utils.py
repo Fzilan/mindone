@@ -17,7 +17,7 @@ def add_logging_arguments(parser):
         help="Log to a file instead of stderr / 標準エラー出力ではなくファイルにログを出力する",
     )
     parser.add_argument("--console_log_simple", action="store_true", help="Simple log output / シンプルなログ出力")
-    
+
 
 def setup_logging(args=None, log_level=None, reset=False):
     if logging.root.handlers:
@@ -42,7 +42,6 @@ def setup_logging(args=None, log_level=None, reset=False):
         handler = None
         if not args or not args.console_log_simple:
             try:
-                from rich.logging import RichHandler
                 from rich.console import Console
                 from rich.logging import RichHandler
 

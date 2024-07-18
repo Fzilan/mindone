@@ -4,7 +4,8 @@ import re
 from typing import List, Optional, Union
 
 import mindspore as ms
-from mindspore import ops, Tensor, nn
+from mindspore import Tensor, nn, ops
+
 from .utils import setup_logging
 
 setup_logging()
@@ -465,7 +466,7 @@ def pyramid_noise_like(noise, iterations=6, discount=0.4):
 
 
 # https://www.crosslabs.org//blog/diffusion-with-offset-noise
-def apply_noise_offset(latents:Tensor, noise, noise_offset, adaptive_noise_scale):
+def apply_noise_offset(latents: Tensor, noise, noise_offset, adaptive_noise_scale):
     if noise_offset is None:
         return noise
     if adaptive_noise_scale is not None:

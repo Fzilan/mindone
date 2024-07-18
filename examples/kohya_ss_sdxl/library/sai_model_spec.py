@@ -1,13 +1,16 @@
 # based on https://github.com/Stability-AI/ModelSpec
 import datetime
 import hashlib
-from io import BytesIO
 import os
+from io import BytesIO
 from typing import List, Optional, Tuple, Union
+
 import safetensors
 from library.utils import setup_logging
+
 setup_logging()
 import logging
+
 logger = logging.getLogger(__name__)
 
 r"""
@@ -142,7 +145,7 @@ def build_metadata(
     metadata["modelspec.architecture"] = arch
 
     if not lora and not textual_inversion and is_stable_diffusion_ckpt is None:
-        is_stable_diffusion_ckpt = True # default is stable diffusion ckpt if not lora and not textual_inversion
+        is_stable_diffusion_ckpt = True  # default is stable diffusion ckpt if not lora and not textual_inversion
 
     if (lora and sdxl) or textual_inversion or is_stable_diffusion_ckpt:
         # Stable Diffusion ckpt, TI, SDXL LoRA
@@ -236,7 +239,7 @@ def build_metadata(
     # assert all([v is not None for v in metadata.values()]), metadata
     if not all([v is not None for v in metadata.values()]):
         logger.error(f"Internal error: some metadata values are None: {metadata}")
-    
+
     return metadata
 
 
@@ -250,7 +253,7 @@ def get_title(metadata: dict) -> Optional[str]:
 def load_metadata_from_safetensors(model: str) -> dict:
     if not model.endswith(".safetensors"):
         return {}
-    
+
     with safetensors.safe_open(model, framework="pt") as f:
         metadata = f.metadata()
     if metadata is None:

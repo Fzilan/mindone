@@ -1,44 +1,28 @@
 import argparse
-from dataclasses import (
-    asdict,
-    dataclass,
-)
 import functools
-import random
-from textwrap import dedent, indent
 import json
+import random
+from dataclasses import asdict, dataclass
 from pathlib import Path
+from textwrap import dedent, indent
 
 # from toolz import curry
-from typing import (
-    List,
-    Optional,
-    Sequence,
-    Tuple,
-    Union,
-)
+from typing import List, Optional, Sequence, Tuple, Union
 
 import toml
 import voluptuous
-from voluptuous import (
-    Any,
-    ExactSequence,
-    MultipleInvalid,
-    Object,
-    Required,
-    Schema,
-)
 from transformers import CLIPTokenizer
+from voluptuous import Any, ExactSequence, MultipleInvalid, Object, Required, Schema
 
 from . import train_util
 from .train_util import (
-    DreamBoothSubset,
-    FineTuningSubset,
-    ControlNetSubset,
-    DreamBoothDataset,
-    FineTuningDataset,
     ControlNetDataset,
+    ControlNetSubset,
     DatasetGroup,
+    DreamBoothDataset,
+    DreamBoothSubset,
+    FineTuningDataset,
+    FineTuningSubset,
 )
 from .utils import setup_logging
 
@@ -256,7 +240,9 @@ class ConfigSanitizer:
         "dataset_repeats": "num_repeats",
     }
 
-    def __init__(self, support_dreambooth: bool, support_finetuning: bool, support_controlnet: bool, support_dropout: bool) -> None:
+    def __init__(
+        self, support_dreambooth: bool, support_finetuning: bool, support_controlnet: bool, support_dropout: bool
+    ) -> None:
         assert support_dreambooth or support_finetuning or support_controlnet, (
             "Neither DreamBooth mode nor fine tuning mode nor controlnet mode specified. Please specify one mode or more."
             + " / DreamBooth モードか fine tuning モードか controlnet モードのどれも指定されていません。1つ以上指定してください。"
@@ -430,7 +416,8 @@ class BlueprintGenerator:
             subset_blueprints = []
             for subset_config in subsets:
                 params = self.generate_params_by_fallbacks(
-                    subset_params_klass, [subset_config, dataset_config, general_config, argparse_config, runtime_params]
+                    subset_params_klass,
+                    [subset_config, dataset_config, general_config, argparse_config, runtime_params],
                 )
                 subset_blueprints.append(SubsetBlueprint(params))
 
@@ -450,7 +437,9 @@ class BlueprintGenerator:
         default_params = asdict(param_klass())
         param_names = default_params.keys()
 
-        params = {name: search_value(name_map.get(name, name), fallbacks, default_params.get(name)) for name in param_names}
+        params = {
+            name: search_value(name_map.get(name, name), fallbacks, default_params.get(name)) for name in param_names
+        }
 
         return param_klass(**params)
 
@@ -575,7 +564,9 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
     return DatasetGroup(datasets)
 
 
-def generate_dreambooth_subsets_config_by_subdirs(train_data_dir: Optional[str] = None, reg_data_dir: Optional[str] = None):
+def generate_dreambooth_subsets_config_by_subdirs(
+    train_data_dir: Optional[str] = None, reg_data_dir: Optional[str] = None
+):
     def extract_dreambooth_params(name: str) -> Tuple[int, str]:
         tokens = name.split("_")
         try:
@@ -603,7 +594,12 @@ def generate_dreambooth_subsets_config_by_subdirs(train_data_dir: Optional[str] 
             if num_repeats < 1:
                 continue
 
-            subset_config = {"image_dir": str(subdir), "num_repeats": num_repeats, "is_reg": is_reg, "class_tokens": class_tokens}
+            subset_config = {
+                "image_dir": str(subdir),
+                "num_repeats": num_repeats,
+                "is_reg": is_reg,
+                "class_tokens": class_tokens,
+            }
             subsets_config.append(subset_config)
 
         return subsets_config
@@ -699,7 +695,10 @@ if __name__ == "__main__":
     logger.info(f"{user_config}")
 
     sanitizer = ConfigSanitizer(
-        config_args.support_dreambooth, config_args.support_finetuning, config_args.support_controlnet, config_args.support_dropout
+        config_args.support_dreambooth,
+        config_args.support_finetuning,
+        config_args.support_controlnet,
+        config_args.support_dropout,
     )
     sanitized_user_config = sanitizer.sanitize_user_config(user_config)
 
