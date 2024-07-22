@@ -337,8 +337,13 @@ class NetworkTrainer:
         network.apply_to(text_encoder, unet, train_text_encoder, train_unet)
 
         if args.network_weights is not None:
-            info = network.load_weights(args.network_weights)
-            logger.info(f"load network weights from {args.network_weights}: {info}")
+            param_not_load = network.load_weights(args.network_weights)
+            if len(param_not_load) == 0:
+                logger.info(f"load network weights from {args.network_weights}: all params loaded")
+            else:
+                logger.info(
+                    f"load network weights from {args.network_weights}, {len(param_not_load)} not loaded: {param_not_load}"
+                )
 
         if args.gradient_checkpointing:
             unet.enable_gradient_checkpointing()

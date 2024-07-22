@@ -67,7 +67,7 @@ from mindspore.communication import get_group_size, get_local_rank, get_rank, in
 # from torch.nn.parallel import DistributedDataParallel as DDP
 # from torch.optim import Optimizer
 # from torchvision import transforms
-from mindspore.dataset import GeneratorDataset, transforms, vision
+from mindspore.dataset import transforms, vision
 
 # import transformers
 from mindone.diffusers.optimization import TYPE_TO_SCHEDULER_FUNCTION, SchedulerType
@@ -178,7 +178,7 @@ IMAGE_TRANSFORMS = transforms.Compose(
     ]
 )
 
-# TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX = "_te_outputs.npz"
+TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX = "_te_outputs.npz"
 
 
 class ImageInfo:
@@ -1028,61 +1028,62 @@ class BaseDataset:
 
     # TODO
     def cache_latents(self, vae, vae_batch_size=1, cache_to_disk=False, is_main_process=True):
-        # マルチGPUには対応していないので、そちらはtools/cache_latents.pyを使うこと
-        logger.info("caching latents.")
+        NotImplementedError
+        # # マルチGPUには対応していないので、そちらはtools/cache_latents.pyを使うこと
+        # logger.info("caching latents.")
 
-        image_infos = list(self.image_data.values())
+        # image_infos = list(self.image_data.values())
 
-        # sort by resolution
-        image_infos.sort(key=lambda info: info.bucket_reso[0] * info.bucket_reso[1])
+        # # sort by resolution
+        # image_infos.sort(key=lambda info: info.bucket_reso[0] * info.bucket_reso[1])
 
-        # split by resolution
-        batches = []
-        batch = []
-        logger.info("checking cache validity...")
-        for info in tqdm(image_infos):
-            subset = self.image_to_subset[info.image_key]
+        # # split by resolution
+        # batches = []
+        # batch = []
+        # logger.info("checking cache validity...")
+        # for info in tqdm(image_infos):
+        #     subset = self.image_to_subset[info.image_key]
 
-            if info.latents_npz is not None:  # fine tuning dataset
-                continue
+        #     if info.latents_npz is not None:  # fine tuning dataset
+        #         continue
 
-            # check disk cache exists and size of latents
-            if cache_to_disk:
-                info.latents_npz = os.path.splitext(info.absolute_path)[0] + ".npz"
-                if not is_main_process:  # store to info only
-                    continue
+        #     # check disk cache exists and size of latents
+        #     if cache_to_disk:
+        #         info.latents_npz = os.path.splitext(info.absolute_path)[0] + ".npz"
+        #         if not is_main_process:  # store to info only
+        #             continue
 
-                cache_available = is_disk_cached_latents_is_expected(
-                    info.bucket_reso, info.latents_npz, subset.flip_aug
-                )
+        #         cache_available = is_disk_cached_latents_is_expected(
+        #             info.bucket_reso, info.latents_npz, subset.flip_aug
+        #         )
 
-                if cache_available:  # do not add to batch
-                    continue
+        #         if cache_available:  # do not add to batch
+        #             continue
 
-            # if last member of batch has different resolution, flush the batch
-            if len(batch) > 0 and batch[-1].bucket_reso != info.bucket_reso:
-                batches.append(batch)
-                batch = []
+        #     # if last member of batch has different resolution, flush the batch
+        #     if len(batch) > 0 and batch[-1].bucket_reso != info.bucket_reso:
+        #         batches.append(batch)
+        #         batch = []
 
-            batch.append(info)
+        #     batch.append(info)
 
-            # if number of data in batch is enough, flush the batch
-            if len(batch) >= vae_batch_size:
-                batches.append(batch)
-                batch = []
+        #     # if number of data in batch is enough, flush the batch
+        #     if len(batch) >= vae_batch_size:
+        #         batches.append(batch)
+        #         batch = []
 
-        if len(batch) > 0:
-            batches.append(batch)
+        # if len(batch) > 0:
+        #     batches.append(batch)
 
-        if (
-            cache_to_disk and not is_main_process
-        ):  # if cache to disk, don't cache latents in non-main process, set to info only
-            return
+        # if (
+        #     cache_to_disk and not is_main_process
+        # ):  # if cache to disk, don't cache latents in non-main process, set to info only
+        #     return
 
-        # iterate batches: batch doesn't have image, image will be loaded in cache_batch_latents and discarded
-        logger.info("caching latents...")
-        for batch in tqdm(batches, smoothing=1, total=len(batches)):
-            cache_batch_latents(vae, cache_to_disk, batch, subset.flip_aug, subset.random_crop)
+        # # iterate batches: batch doesn't have image, image will be loaded in cache_batch_latents and discarded
+        # logger.info("caching latents...")
+        # for batch in tqdm(batches, smoothing=1, total=len(batches)):
+        #     cache_batch_latents(vae, cache_to_disk, batch, subset.flip_aug, subset.random_crop)
 
     # weight_dtypeを指定するとText Encoderそのもの、およひ出力がweight_dtypeになる
     # SDXLでのみ有効だが、datasetのメソッドとする必要があるので、sdxl_train_util.pyではなくこちらに実装する
@@ -1143,8 +1144,8 @@ class BaseDataset:
         logger.info("caching text encoder outputs...")
         for batch in tqdm(batches):
             infos, input_ids1, input_ids2 = zip(*batch)
-            input_ids1 = torch.stack(input_ids1, dim=0)
-            input_ids2 = torch.stack(input_ids2, dim=0)
+            input_ids1 = ops.stack(input_ids1, dim=0)
+            input_ids2 = ops.stack(input_ids2, dim=0)
             cache_batch_text_encoder_outputs(
                 infos,
                 tokenizers,
