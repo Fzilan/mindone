@@ -17,8 +17,10 @@ _import_structure = {
     "models": [
         "AsymmetricAutoencoderKL",
         "AutoencoderKL",
+        "AutoencoderKLCogVideoX",
         "AutoencoderKLTemporalDecoder",
         "AutoencoderTiny",
+        "CogVideoXTransformer3DModel",
         "ConsistencyDecoderVAE",
         "ControlNetModel",
         "ControlNetXSAdapter",
@@ -185,8 +187,10 @@ if TYPE_CHECKING:
     from .models import (
         AsymmetricAutoencoderKL,
         AutoencoderKL,
+        AutoencoderKLCogVideoX,
         AutoencoderKLTemporalDecoder,
         AutoencoderTiny,
+        CogVideoXTransformer3DModel,
         ConsistencyDecoderVAE,
         ControlNetModel,
         ControlNetXSAdapter,
