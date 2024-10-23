@@ -94,6 +94,14 @@ except importlib_metadata.PackageNotFoundError:
     _bs4_available = False
 
 
+_invisible_watermark_available = importlib.util.find_spec("imwatermark") is not None
+try:
+    _invisible_watermark_version = importlib_metadata.version("invisible-watermark")
+    logger.debug(f"Successfully imported invisible-watermark version {_invisible_watermark_version}")
+except importlib_metadata.PackageNotFoundError:
+    _invisible_watermark_available = False
+
+
 _matplotlib_available = importlib.util.find_spec("matplotlib") is not None
 try:
     _matplotlib_version = importlib_metadata.version("matplotlib")
@@ -172,6 +180,11 @@ FTFY_IMPORT_ERROR = """
 {0} requires the ftfy library but it was not found in your environment. Checkout the instructions on the
 installation section: https://github.com/rspeer/python-ftfy/tree/master#installing and follow the ones
 that match your environment. Please note that you may need to restart your runtime after installation.
+"""
+
+# docstyle-ignore
+INVISIBLE_WATERMARK_IMPORT_ERROR = """
+{0} requires the invisible-watermark library but it was not found in your environment. You can install it with pip: `pip install invisible-watermark>=0.2.0`
 """
 
 
