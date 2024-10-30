@@ -25,6 +25,19 @@ _import_structure = {
         "StableDiffusionXLControlNetInpaintPipeline",
         "StableDiffusionXLControlNetPipeline",
     ],
+    "pag": [
+        "AnimateDiffPAGPipeline",
+        "KolorsPAGPipeline",
+        "HunyuanDiTPAGPipeline",
+        "StableDiffusion3PAGPipeline",
+        "StableDiffusionPAGPipeline",
+        "StableDiffusionControlNetPAGPipeline",
+        "StableDiffusionXLPAGPipeline",
+        "StableDiffusionXLPAGInpaintPipeline",
+        "StableDiffusionXLControlNetPAGPipeline",
+        "StableDiffusionXLPAGImg2ImgPipeline",
+        "PixArtSigmaPAGPipeline",
+    ],
     "controlnet_xs": [
         "StableDiffusionControlNetXSPipeline",
         "StableDiffusionXLControlNetXSPipeline",
@@ -188,6 +201,19 @@ if TYPE_CHECKING:
     from .latent_consistency_models import LatentConsistencyModelImg2ImgPipeline, LatentConsistencyModelPipeline
     from .latent_diffusion import LDMSuperResolutionPipeline, LDMTextToImagePipeline
     from .marigold import MarigoldDepthPipeline, MarigoldNormalsPipeline
+    from .pag import (
+        AnimateDiffPAGPipeline,
+        HunyuanDiTPAGPipeline,
+        KolorsPAGPipeline,
+        PixArtSigmaPAGPipeline,
+        StableDiffusion3PAGPipeline,
+        StableDiffusionControlNetPAGPipeline,
+        StableDiffusionPAGPipeline,
+        StableDiffusionXLControlNetPAGPipeline,
+        StableDiffusionXLPAGImg2ImgPipeline,
+        StableDiffusionXLPAGInpaintPipeline,
+        StableDiffusionXLPAGPipeline,
+    )
     from .pipeline_utils import DiffusionPipeline, ImagePipelineOutput, StableDiffusionMixin
     from .pixart_alpha import PixArtAlphaPipeline, PixArtSigmaPipeline
     from .shap_e import ShapEImg2ImgPipeline, ShapEPipeline
