@@ -627,6 +627,7 @@ class UNet2DConditionLoadersMixin:
             and self.config.encoder_hid_dim_type == "text_proj"
             and not hasattr(self, "text_encoder_hid_proj")
         ):
+            self.has_text_encoder_hid_proj = True
             self.text_encoder_hid_proj = self.encoder_hid_proj
 
         # Set encoder_hid_proj after loading ip_adapter weights,

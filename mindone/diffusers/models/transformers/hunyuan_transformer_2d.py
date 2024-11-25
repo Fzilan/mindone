@@ -20,7 +20,7 @@ from ...configuration_utils import ConfigMixin, register_to_config
 from ...utils import logging
 from ..activations import SiLU
 from ..attention import FeedForward
-from ..attention_processor import Attention, AttentionProcessor, HunyuanAttnProcessor
+from ..attention_processor import Attention, AttentionProcessor, HunyuanAttnProcessor2_0
 from ..embeddings import HunyuanCombinedTimestepTextSizeStyleEmbedding, PatchEmbed, PixArtAlphaTextProjection
 from ..modeling_outputs import Transformer2DModelOutput
 from ..modeling_utils import ModelMixin
@@ -112,7 +112,7 @@ class HunyuanDiTBlock(nn.Cell):
             qk_norm="layer_norm" if qk_norm else None,
             eps=1e-6,
             bias=True,
-            processor=HunyuanAttnProcessor(),
+            processor=HunyuanAttnProcessor2_0(),
         )
 
         # 2. Cross-Attn
@@ -126,7 +126,7 @@ class HunyuanDiTBlock(nn.Cell):
             qk_norm="layer_norm" if qk_norm else None,
             eps=1e-6,
             bias=True,
-            processor=HunyuanAttnProcessor(),
+            processor=HunyuanAttnProcessor2_0(),
         )
         # 3. Feed-forward
         self.norm3 = FP32LayerNorm(dim, norm_eps, norm_elementwise_affine)
@@ -377,7 +377,7 @@ class HunyuanDiT2DModel(ModelMixin, ConfigMixin):
         """
         Disables custom attention processors and sets the default attention implementation.
         """
-        self.set_attn_processor(HunyuanAttnProcessor())
+        self.set_attn_processor(HunyuanAttnProcessor2_0())
 
     def construct(
         self,
@@ -446,9 +446,12 @@ class HunyuanDiT2DModel(ModelMixin, ConfigMixin):
         for layer, block in enumerate(self.blocks):
             if layer > self.config["num_layers"] // 2:
                 if controlnet_block_samples is not None:
-                    skip = skips.pop() + controlnet_block_samples.pop()
+                    skip = skips[-1] + controlnet_block_samples[-1]
+                    controlnet_block_samples = controlnet_block_samples[:-1]
                 else:
-                    skip = skips.pop()
+                    skip = skips[-1]
+                skips = skips[:-1]
+
                 hidden_states = block(
                     hidden_states,
                     temb=temb,
