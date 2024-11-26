@@ -23,54 +23,38 @@ import os
 import random
 import shutil
 import warnings
-from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
 import yaml
-# import torch
-# import torch.utils.checkpoint
-# from accelerate import Accelerator
-# from accelerate.logging import get_logger
-# from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
-from huggingface_hub import create_repo, upload_folder
 from huggingface_hub.utils import insecure_hashlib
-from mindone.diffusers._peft import LoraConfig, set_peft_model_state_dict
-from mindone.diffusers._peft.tuners.tuners_utils import BaseTunerLayer
-from mindone.diffusers._peft.utils import get_peft_model_state_dict
 from PIL import Image
 from PIL.ImageOps import exif_transpose
-# from torch.utils.data import Dataset
-# from torchvision import transforms
-# from torchvision.transforms.functional import crop
 from tqdm.auto import tqdm
 from transformers import CLIPTokenizer, PretrainedConfig, T5TokenizerFast
+
 import mindspore as ms
 from mindspore import nn, ops
 from mindspore.amp import StaticLossScaler
 from mindspore.dataset import GeneratorDataset, transforms, vision
 
-from mindone.diffusers import (
-    AutoencoderKL,
-    FlowMatchEulerDiscreteScheduler,
-    FluxPipeline,
-    FluxTransformer2DModel,
-)
+from mindone.diffusers import AutoencoderKL, FlowMatchEulerDiscreteScheduler, FluxPipeline, FluxTransformer2DModel
+from mindone.diffusers._peft import LoraConfig, set_peft_model_state_dict
+from mindone.diffusers._peft.tuners.tuners_utils import BaseTunerLayer
+from mindone.diffusers._peft.utils import get_peft_model_state_dict
 from mindone.diffusers.optimization import get_scheduler
+from mindone.diffusers.training_utils import compute_density_for_timestep_sampling  # noqa F401
 from mindone.diffusers.training_utils import (
     AttrJitWrapper,
     TrainStep,
     _set_state_dict_into_text_encoder,
     cast_training_params,
-    compute_density_for_timestep_sampling,
     compute_loss_weighting_for_sd3,
-    cast_training_params,
     init_distributed_device,
     is_master,
     set_seed,
 )
 from mindone.diffusers.utils import convert_unet_state_dict_to_peft
-from mindone.diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +85,7 @@ def log_validation(
 
     # run inference
     generator = None if args.seed is None else np.random.Generator(np.random.PCG64(seed=args.seed))
-    images = [pipeline(**pipeline_args, generator=generator).images[0] for _ in range(args.num_validation_images)]
+    images = [pipeline(**pipeline_args, generator=generator)[0][0] for _ in range(args.num_validation_images)]
 
     phase_name = "test" if is_final_validation else "validation"
     if is_master(args):
@@ -230,7 +214,6 @@ def parse_args(input_args=None):
         default=None,
         help="The prompt to specify images in the same class as provided instance images.",
     )
-    # TODO : check 
     parser.add_argument(
         "--max_sequence_length",
         type=int,
@@ -318,9 +301,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--train_batch_size", type=int, default=4, help="Batch size (per device) for the training dataloader."
     )
-    parser.add_argument(
-        "--sample_batch_size", type=int, default=4, help="Batch size (per device) for sampling images."
-    )
+    parser.add_argument("--sample_batch_size", type=int, default=4, help="Batch size (per device) for sampling images.")
     parser.add_argument("--num_train_epochs", type=int, default=1)
     parser.add_argument(
         "--max_train_steps",
@@ -413,9 +394,7 @@ def parse_args(input_args=None):
         "--dataloader_num_workers",
         type=int,
         default=1,
-        help=(
-            "Number of subprocesses to use for data loading."
-        ),
+        help=("Number of subprocesses to use for data loading."),
     )
     parser.add_argument(
         "--enable_mindspore_data_sink",
@@ -450,7 +429,7 @@ def parse_args(input_args=None):
         "--optimizer",
         type=str,
         default="AdamW",
-        help=('The optimizer type to use. Choose between ["AdamW", "prodigy"]'),
+        help=('The optimizer type to use. Choose between ["AdamW", "prodigy"], "prodigy" not yet implemented'),
     )
 
     parser.add_argument(
@@ -632,6 +611,7 @@ class DreamBoothDataset(object):
         self.instance_prompt = instance_prompt
         self.custom_instance_prompts = None
         self.class_prompt = class_prompt
+        self.max_sequence_length = args.max_sequence_length
 
         # if --dataset_name is provided or a metadata jsonl file is provided in the local --instance_data directory,
         # we load the training data using load_dataset
@@ -770,9 +750,13 @@ class DreamBoothDataset(object):
 
         else:  # custom prompts were provided, but length does not match size of image dataset
             example["instance_prompt"] = self.instance_prompt
-        
-        example["instance_tokens_one"] = tokenize_prompt(self.tokenizer_one, example["instance_prompt"])
-        example["instance_tokens_two"] = tokenize_prompt(self.tokenizer_two, example["instance_prompt"])
+
+        example["instance_tokens_one"] = tokenize_prompt(
+            self.tokenizer_one, example["instance_prompt"], max_sequence_length=77
+        )
+        example["instance_tokens_two"] = tokenize_prompt(
+            self.tokenizer_two, example["instance_prompt"], max_sequence_length=self.max_sequence_length
+        )
 
         if self.class_data_root:
             class_image = Image.open(self.class_images_path[index % self.num_class_images])
@@ -782,8 +766,12 @@ class DreamBoothDataset(object):
                 class_image = class_image.convert("RGB")
             example["class_images"] = self.image_transforms(class_image)[0]
             example["class_prompt"] = self.class_prompt
-            example["class_tokens_one"] = tokenize_prompt(self.tokenizer_one, example["class_prompt"])
-            example["class_tokens_two"] = tokenize_prompt(self.tokenizer_two, example["class_prompt"])
+            example["class_tokens_one"] = tokenize_prompt(
+                self.tokenizer_one, example["class_prompt"], max_sequence_length=77
+            )
+            example["class_tokens_two"] = tokenize_prompt(
+                self.tokenizer_two, example["class_prompt"], max_sequence_length=self.max_sequence_length
+            )
 
         return example
 
@@ -838,8 +826,9 @@ def tokenize_prompt(tokenizer, prompt, max_sequence_length):
 
     if text_input_ids is None:
         raise ValueError("text_input_ids must be provided when the tokenizer is not specified")
-    
+
     return text_input_ids
+
 
 def _encode_prompt_with_t5(
     text_encoder,
@@ -903,9 +892,9 @@ def encode_prompt(
     )
 
     text_ids = ms.mint.zeros((prompt_embeds.shape[1], 3)).to(dtype=dtype)
+    text_ids = text_ids.tile((num_images_per_prompt, 1, 1))
 
     return prompt_embeds, pooled_prompt_embeds, text_ids
-
 
 
 def main(args):
@@ -960,8 +949,8 @@ def main(args):
             sample_dataloader_iter = sample_dataloader.create_tuple_iterator(output_numpy=True)
 
             for (example,) in tqdm(
-                sample_dataloader_iter, 
-                desc="Generating class images", 
+                sample_dataloader_iter,
+                desc="Generating class images",
                 total=len(sample_dataloader),
                 disable=not is_master(args),
             ):
@@ -999,9 +988,7 @@ def main(args):
     )
 
     # import correct text encoder classes
-    text_encoder_cls_one = import_model_class_from_model_name_or_path(
-        args.pretrained_model_name_or_path, args.revision
-    )
+    text_encoder_cls_one = import_model_class_from_model_name_or_path(args.pretrained_model_name_or_path, args.revision)
     text_encoder_cls_two = import_model_class_from_model_name_or_path(
         args.pretrained_model_name_or_path, args.revision, subfolder="text_encoder_2"
     )
@@ -1058,7 +1045,7 @@ def main(args):
         target_modules=["to_k", "to_q", "to_v", "to_out.0"],
     )
     transformer.add_adapter(transformer_lora_config)
-    
+
     if args.train_text_encoder:
         text_lora_config = LoraConfig(
             r=args.lora_rank,
@@ -1078,7 +1065,7 @@ def main(args):
                 if isinstance(model, type(transformer)):
                     transformer_lora_layers_to_save = get_peft_model_state_dict(model)
                 elif isinstance(model, type(text_encoder_one)):
-                    text_encoder_one_lora_layers_to_save = get_peft_model_state_dict(model)
+                    text_encoder_one_lora_layers_to_save = get_peft_model_state_dict(model, save_embedding_layers=False)
                 else:
                     raise ValueError(f"unexpected save model: {model.__class__}")
 
@@ -1104,7 +1091,6 @@ def main(args):
 
         lora_state_dict = FluxPipeline.lora_state_dict(input_dir)
 
-        # TODO: check the name here 
         transformer_state_dict = {
             f'{k.replace("transformer.", "")}': v for k, v in lora_state_dict.items() if k.startswith("transformer.")
         }
@@ -1132,11 +1118,12 @@ def main(args):
             # only upcast trainable parameters (LoRA) into fp32
             cast_training_params(models)
 
+    models = [transformer]
+    if args.train_text_encoder:
+        models.extend([text_encoder_one])
+
     # Make sure the trainable params are in float32.
-    if args.mixed_precision == "fp16":
-        models = [transformer]
-        if args.train_text_encoder:
-            models.extend([text_encoder_one])
+    if args.mixed_precision == "fp16" or args.mixed_precision == "bf16":
         # only upcast trainable parameters (LoRA) into fp32
         cast_training_params(models, dtype=ms.float32)
 
@@ -1148,96 +1135,6 @@ def main(args):
             f"{peft_model.__class__.__name__:<30s} ==> Trainable params: {trainable_params:<10,d} || "
             f"All params: {all_params:<16,d} || Trainable ratio: {trainable_params / all_params:.8%}"
         )
-
-    # TODO check optimizer and lr
-    # transformer_lora_parameters = list(filter(lambda p: p.requires_grad, transformer.parameters()))
-    # if args.train_text_encoder:
-    #     text_lora_parameters_one = list(filter(lambda p: p.requires_grad, text_encoder_one.parameters()))
-
-    # # Optimization parameters
-    # transformer_parameters_with_lr = {"params": transformer_lora_parameters, "lr": args.learning_rate}
-    # if args.train_text_encoder:
-    #     # different learning rate for text encoder and unet
-    #     text_parameters_one_with_lr = {
-    #         "params": text_lora_parameters_one,
-    #         "weight_decay": args.adam_weight_decay_text_encoder,
-    #         "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate,
-    #     }
-    #     params_to_optimize = [
-    #         transformer_parameters_with_lr,
-    #         text_parameters_one_with_lr,
-    #     ]
-    # else:
-    #     params_to_optimize = [transformer_parameters_with_lr]
-
-    # # Optimizer creation
-    # if not (args.optimizer.lower() == "prodigy" or args.optimizer.lower() == "adamw"):
-    #     logger.warning(
-    #         f"Unsupported choice of optimizer: {args.optimizer}.Supported optimizers include [adamW, prodigy]."
-    #         "Defaulting to adamW"
-    #     )
-    #     args.optimizer = "adamw"
-
-    # if args.use_8bit_adam and not args.optimizer.lower() == "adamw":
-    #     logger.warning(
-    #         f"use_8bit_adam is ignored when optimizer is not set to 'AdamW'. Optimizer was "
-    #         f"set to {args.optimizer.lower()}"
-    #     )
-
-    # if args.optimizer.lower() == "adamw":
-    #     if args.use_8bit_adam:
-    #         try:
-    #             import bitsandbytes as bnb
-    #         except ImportError:
-    #             raise ImportError(
-    #                 "To use 8-bit Adam, please install the bitsandbytes library: `pip install bitsandbytes`."
-    #             )
-
-    #         optimizer_class = bnb.optim.AdamW8bit
-    #     else:
-    #         optimizer_class = torch.optim.AdamW
-
-    #     optimizer = optimizer_class(
-    #         params_to_optimize,
-    #         betas=(args.adam_beta1, args.adam_beta2),
-    #         weight_decay=args.adam_weight_decay,
-    #         eps=args.adam_epsilon,
-    #     )
-
-    # if args.optimizer.lower() == "prodigy":
-    #     try:
-    #         import prodigyopt
-    #     except ImportError:
-    #         raise ImportError("To use Prodigy, please install the prodigyopt library: `pip install prodigyopt`")
-
-    #     optimizer_class = prodigyopt.Prodigy
-
-    #     if args.learning_rate <= 0.1:
-    #         logger.warning(
-    #             "Learning rate is too low. When using prodigy, it's generally better to set learning rate around 1.0"
-    #         )
-    #     if args.train_text_encoder and args.text_encoder_lr:
-    #         logger.warning(
-    #             f"Learning rates were provided both for the transformer and the text encoder- e.g. text_encoder_lr:"
-    #             f" {args.text_encoder_lr} and learning_rate: {args.learning_rate}. "
-    #             f"When using prodigy only learning_rate is used as the initial learning rate."
-    #         )
-    #         # changes the learning rate of text_encoder_parameters_one and text_encoder_parameters_two to be
-    #         # --learning_rate
-    #         params_to_optimize[1]["lr"] = args.learning_rate
-    #         params_to_optimize[2]["lr"] = args.learning_rate
-
-    #     optimizer = optimizer_class(
-    #         params_to_optimize,
-    #         lr=args.learning_rate,
-    #         betas=(args.adam_beta1, args.adam_beta2),
-    #         beta3=args.prodigy_beta3,
-    #         weight_decay=args.adam_weight_decay,
-    #         eps=args.adam_epsilon,
-    #         decouple=args.prodigy_decouple,
-    #         use_bias_correction=args.prodigy_use_bias_correction,
-    #         safeguard_warmup=args.prodigy_safeguard_warmup,
-    #     )
 
     # Dataset and DataLoaders creation:
     train_dataset = DreamBoothDataset(
@@ -1269,47 +1166,17 @@ def main(args):
         num_parallel_workers=args.dataloader_num_workers,
     )
 
-    # TODO put in train one step?
-    # if not args.train_text_encoder:
-    #     tokenizers = [tokenizer_one, tokenizer_two]
-    #     text_encoders = [text_encoder_one, text_encoder_two]
-
-    #     def compute_text_embeddings(prompt, text_encoders, tokenizers):
-    #         with torch.no_grad():
-    #             prompt_embeds, pooled_prompt_embeds, text_ids = encode_prompt(
-    #                 text_encoders, tokenizers, prompt, args.max_sequence_length
-    #             )
-    #             prompt_embeds = prompt_embeds.to(accelerator.device)
-    #             pooled_prompt_embeds = pooled_prompt_embeds.to(accelerator.device)
-    #             text_ids = text_ids.to(accelerator.device)
-    #         return prompt_embeds, pooled_prompt_embeds, text_ids
-
-    # # If no type of tuning is done on the text_encoder and custom instance prompts are NOT
-    # # provided (i.e. the --instance_prompt is used for all images), we encode the instance prompt once to avoid
-    # # the redundant encoding.
-    # if not args.train_text_encoder and not train_dataset.custom_instance_prompts:
-    #     instance_prompt_hidden_states, instance_pooled_prompt_embeds, instance_text_ids = compute_text_embeddings(
-    #         args.instance_prompt, text_encoders, tokenizers
-    #     )
-
-    # # Handle class prompt for prior-preservation.
-    # if args.with_prior_preservation:
-    #     if not args.train_text_encoder:
-    #         class_prompt_hidden_states, class_pooled_prompt_embeds, class_text_ids = compute_text_embeddings(
-    #             args.class_prompt, text_encoders, tokenizers
-    #         )
-
-    # If custom instance prompts are NOT provided (i.e. the instance prompt is used for all images),
-    # pack the statically computed variables appropriately here. This is so that we don't
-    # have to pass them to the dataloader.
-
     if not train_dataset.custom_instance_prompts:
         tokens_one = ms.Tensor.from_numpy(tokenize_prompt(tokenizer_one, args.instance_prompt, 77))
-        tokens_two = ms.Tensor.from_numpy(tokenize_prompt(tokenizer_two, args.instance_prompt, args.max_sequence_length))
+        tokens_two = ms.Tensor.from_numpy(
+            tokenize_prompt(tokenizer_two, args.instance_prompt, args.max_sequence_length)
+        )
 
         if args.with_prior_preservation:
             class_tokens_one = ms.Tensor.from_numpy(tokenize_prompt(tokenizer_one, args.class_prompt, 77))
-            class_tokens_two = ms.Tensor.from_numpy(tokenize_prompt(tokenizer_two, args.class_prompt, args.max_sequence_length))
+            class_tokens_two = ms.Tensor.from_numpy(
+                tokenize_prompt(tokenizer_two, args.class_prompt, args.max_sequence_length)
+            )
 
             tokens_one = ops.cat([tokens_one, class_tokens_one], axis=0)
             tokens_two = ops.cat([tokens_two, class_tokens_two], axis=0)
@@ -1320,18 +1187,17 @@ def main(args):
 
         if not args.train_text_encoder:
             prompt_embeds, pooled_prompt_embeds, text_ids = encode_prompt(
-                text_encoder_one, 
+                text_encoder_one,
                 text_encoder_two,
-                tokens_one, 
+                tokens_one,
                 tokens_two,
             )
         else:
             prompt_embeds, pooled_prompt_embeds, text_ids = None, None, None
-                
+
     else:
         tokens_one, tokens_two = None, None
         prompt_embeds, pooled_prompt_embeds, text_ids = None, None, None
-    
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -1358,7 +1224,9 @@ def main(args):
     params_to_optimize = list(filter(lambda p: p.requires_grad, transformer.get_parameters()))
     if args.train_text_encoder:
         # TODO different learning rate for text encoder and transformer scenario
-        params_to_optimize = params_to_optimize + list(filter(lambda p: p.requires_grad, text_encoder_one.get_parameters()))
+        params_to_optimize = params_to_optimize + list(
+            filter(lambda p: p.requires_grad, text_encoder_one.get_parameters())
+        )
 
     # Optimizer creation
     optimizer = nn.AdamWeightDecay(
@@ -1557,7 +1425,7 @@ def main(args):
                 trackers=trackers,
                 logging_dir=logging_dir,
                 pipeline_args=pipeline_args,
-                epoch=epoch+1,
+                epoch=epoch + 1,
             )
 
     # Save the lora layers
@@ -1597,6 +1465,7 @@ def main(args):
         if tracker_name == "tensorboard":
             tracker.close()
 
+
 def compute_weighting_mse_loss(weighting, pred, target):
     """
     When argument with_prior_preservation is True in DreamBooth training, weighting has different batch_size
@@ -1613,6 +1482,7 @@ def compute_weighting_mse_loss(weighting, pred, target):
     weighting_mse_loss = weighting_mse_loss.mean()
 
     return weighting_mse_loss
+
 
 class TrainStepForFluxDevDB(TrainStep):
     def __init__(
@@ -1668,7 +1538,6 @@ class TrainStepForFluxDevDB(TrainStep):
         self.pooled_prompt_embeds = pooled_prompt_embeds
         self.text_ids = text_ids
 
-        
     def get_sigmas(self, indices, n_dim=4, dtype=ms.float32):
         """
         origin `get_sigmas` which uses timesteps to get sigmas might be not supported
@@ -1679,20 +1548,15 @@ class TrainStepForFluxDevDB(TrainStep):
         while len(sigma.shape) < n_dim:
             sigma = sigma.unsqueeze(-1)
         return sigma
-    
+
     def forward(self, pixel_values, tokens_one, tokens_two):
-
-        models_to_accumulate = [self.transformer]
-        if args.train_text_encoder:
-            models_to_accumulate.extend([self.text_encoder_one])
-
         # encode batch prompts when custom prompts are provided for each image
         if self.custom_instance_prompts:
             prompt_embeds, pooled_prompt_embeds, text_ids = encode_prompt(
                 text_encoder_one=self.text_encoder_one,
                 text_encoder_two=self.text_encoder_two,
-                text_input_ids_one=tokens_one, # from batch input
-                text_input_ids_two=tokens_two, # from batch input
+                text_input_ids_one=tokens_one,  # from batch input
+                text_input_ids_two=tokens_two,  # from batch input
             )
         else:
             if args.train_text_encoder:
@@ -1700,51 +1564,22 @@ class TrainStepForFluxDevDB(TrainStep):
                 prompt_embeds, pooled_prompt_embeds, text_ids = encode_prompt(
                     text_encoder_one=self.text_encoder_one,
                     text_encoder_two=self.text_encoder_two,
-                    text_input_ids_one=self.tokens_one, # from pre-compute tokens
-                    text_input_ids_two=self.tokens_two, # from pre-compute tokens
+                    text_input_ids_one=self.tokens_one,  # from pre-compute tokens
+                    text_input_ids_two=self.tokens_two,  # from pre-compute tokens
                 )
             else:
                 # use pre-computed embeddings.
-                prompt_embeds, pooled_prompt_embeds, text_ids = self.prompt_embeds, self.pooled_prompt_embeds, self.text_ids
-
-        # with accelerator.accumulate(models_to_accumulate):
-        #     prompts = batch["prompts"]
-
-        #     # encode batch prompts when custom prompts are provided for each image -
-        #     if train_dataset.custom_instance_prompts:
-        #         if not args.train_text_encoder:
-        #             prompt_embeds, pooled_prompt_embeds, text_ids = compute_text_embeddings(
-        #                 prompts, text_encoders, tokenizers
-        #             )
-        #         else:
-        #             tokens_one = tokenize_prompt(tokenizer_one, prompts, max_sequence_length=77)
-        #             tokens_two = tokenize_prompt(
-        #                 tokenizer_two, prompts, max_sequence_length=args.max_sequence_length
-        #             )
-        #             prompt_embeds, pooled_prompt_embeds, text_ids = encode_prompt(
-        #                 text_encoders=[text_encoder_one, text_encoder_two],
-        #                 tokenizers=[None, None],
-        #                 text_input_ids_list=[tokens_one, tokens_two],
-        #                 max_sequence_length=args.max_sequence_length,
-        #                 device=accelerator.device,
-        #                 prompt=prompts,
-        #             )
-        #     else:
-        #         if args.train_text_encoder:
-        #             prompt_embeds, pooled_prompt_embeds, text_ids = encode_prompt(
-        #                 text_encoders=[text_encoder_one, text_encoder_two],
-        #                 tokenizers=[None, None],
-        #                 text_input_ids_list=[tokens_one, tokens_two],
-        #                 max_sequence_length=args.max_sequence_length,
-        #                 device=accelerator.device,
-        #                 prompt=args.instance_prompt,
-        #             )
+                prompt_embeds, pooled_prompt_embeds, text_ids = (
+                    self.prompt_embeds,
+                    self.pooled_prompt_embeds,
+                    self.text_ids,
+                )
 
         # Convert images to latent space
         pixel_values = pixel_values.to(dtype=self.vae_dtype)
 
         model_input = self.vae.diag_gauss_dist.sample(self.vae.encode(pixel_values)[0])
-        model_input = (model_input - self.vae_config_shift_factor) * self.vae_scaling_factor
+        model_input = (model_input - self.vae_config_shift_factor) * self.vae_config_scaling_factor
         model_input = model_input.to(dtype=self.weight_dtype)
 
         latent_image_ids = FluxPipeline._prepare_latent_image_ids(
@@ -1760,13 +1595,13 @@ class TrainStepForFluxDevDB(TrainStep):
 
         # Sample a random timestep for each image
         # for weighting schemes where we sample timesteps non-uniformly
-        # TODO 不拆出来可以吗
+        # TODO test
         # u = compute_density_for_timestep_sampling(
-        #     weighting_scheme=args.weighting_scheme,
+        #     weighting_scheme=self.args.weighting_scheme,
         #     batch_size=bsz,
-        #     logit_mean=args.logit_mean,
-        #     logit_std=args.logit_std,
-        #     mode_scale=args.mode_scale,
+        #     logit_mean=self.args.logit_mean,
+        #     logit_std=self.args.logit_std,
+        #     mode_scale=self.args.mode_scale,
         # )
         if self.args.weighting_scheme == "logit_normal":
             # See 3.1 in the SD3 paper ($rf/lognorm(0.00,1.00)$).
@@ -1797,14 +1632,14 @@ class TrainStepForFluxDevDB(TrainStep):
         # handle guidance
         if self.transformer_config_guidance_embeds:
             guidance = ms.tensor([self.args.guidance_scale])
-            guidance = guidance.expand(model_input.shape[0])
+            guidance = guidance.broadcast_to(model_input.shape[0])
         else:
             guidance = None
 
         # Predict the noise residual
         model_pred = self.transformer(
             hidden_states=packed_noisy_model_input,
-            # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transforme rmodel (we should not keep it but I want to keep the inputs same for the model for testing)
+            # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transforme rmodel (we should not keep it but I want to keep the inputs same for the model for testing) # noqa E501
             timestep=timesteps / 1000,
             guidance=guidance,
             pooled_projections=pooled_prompt_embeds,
@@ -1822,7 +1657,6 @@ class TrainStepForFluxDevDB(TrainStep):
 
         # these weighting schemes use a uniform timestep sampling
         # and instead post-weight the loss
-        # TODO test 可以不拆吗
         weighting = compute_loss_weighting_for_sd3(weighting_scheme=self.args.weighting_scheme, sigmas=sigmas)
 
         # flow matching loss
