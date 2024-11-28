@@ -34,36 +34,36 @@ Since RegEx is supported as a way for matching layer identifiers, it is crucial 
 </Tip>
 
 ## AnimateDiffPAGPipeline
-::: AnimateDiffPAGPipeline
+::: mindone.diffusers.AnimateDiffPAGPipeline
 
 ## HunyuanDiTPAGPipeline
-::: HunyuanDiTPAGPipeline
+::: mindone.diffusers.HunyuanDiTPAGPipeline
 
 ## KolorsPAGPipeline
-::: KolorsPAGPipeline
+::: mindone.diffusers.KolorsPAGPipeline
 
 ## StableDiffusionPAGPipeline
-::: StableDiffusionPAGPipeline
+::: mindone.diffusers.StableDiffusionPAGPipeline
 
 ## StableDiffusionControlNetPAGPipeline
-::: StableDiffusionControlNetPAGPipeline
+::: mindone.diffusers.StableDiffusionControlNetPAGPipeline
 
 ## StableDiffusionXLPAGPipeline
-::: StableDiffusionXLPAGPipeline
+::: mindone.diffusers.StableDiffusionXLPAGPipeline
 
 ## StableDiffusionXLPAGImg2ImgPipeline
-::: StableDiffusionXLPAGImg2ImgPipeline
+::: mindone.diffusers.StableDiffusionXLPAGImg2ImgPipeline
 
 ## StableDiffusionXLPAGInpaintPipeline
-::: StableDiffusionXLPAGInpaintPipeline
+::: mindone.diffusers.StableDiffusionXLPAGInpaintPipeline
 
 ## StableDiffusionXLControlNetPAGPipeline
-::: StableDiffusionXLControlNetPAGPipeline
+::: mindone.diffusers.StableDiffusionXLControlNetPAGPipeline
 
 
 ## StableDiffusion3PAGPipeline
-::: StableDiffusion3PAGPipeline
+::: mindone.diffusers.StableDiffusion3PAGPipeline
 
 
 ## PixArtSigmaPAGPipeline
-::: PixArtSigmaPAGPipeline
+::: mindone.diffusers.PixArtSigmaPAGPipeline
