@@ -1407,7 +1407,7 @@ class StableDiffusionControlNetPAGInpaintPipeline(
                     encoder_hidden_states=prompt_embeds,
                     timestep_cond=timestep_cond,
                     cross_attention_kwargs=self.cross_attention_kwargs,
-                    down_block_additional_residuals=down_block_res_samples,
+                    down_block_additional_residuals=ms.mutable(down_block_res_samples),
                     mid_block_additional_residual=mid_block_res_sample,
                     added_cond_kwargs=ms.mutable(added_cond_kwargs) if added_cond_kwargs else added_cond_kwargs,
                     return_dict=False,

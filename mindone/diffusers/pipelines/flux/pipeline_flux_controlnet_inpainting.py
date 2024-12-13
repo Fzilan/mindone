@@ -1080,7 +1080,7 @@ class FluxControlNetInpaintPipeline(DiffusionPipeline, FluxLoraLoaderMixin, From
                     guidance=guidance,
                     pooled_projections=pooled_prompt_embeds,
                     encoder_hidden_states=prompt_embeds,
-                    controlnet_block_samples=controlnet_block_samples,
+                    controlnet_block_samples=ms.mutable(controlnet_block_samples),
                     controlnet_single_block_samples=controlnet_single_block_samples,
                     txt_ids=text_ids,
                     img_ids=latent_image_ids,
@@ -1098,7 +1098,7 @@ class FluxControlNetInpaintPipeline(DiffusionPipeline, FluxLoraLoaderMixin, From
                 if i < len(timesteps) - 1:
                     noise_timestep = timesteps[i + 1]
                     init_latents_proper = self.scheduler.scale_noise(
-                        init_latents_proper, ms.tensor([noise_timestep]), noise
+                        init_latents_proper, ms.tensor([noise_timestep.item()]), noise
                     )
 
                 latents = (1 - init_mask) * init_latents_proper + init_mask * latents

@@ -478,8 +478,9 @@ class FluxTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrig
             )
             # controlnet residual
             if controlnet_block_samples is not None:
-                interval_control = len(self.transformer_blocks) / len(controlnet_block_samples)
-                interval_control = ops.ceil(ms.tensor(interval_control)).int().item()  # not supporting numpy
+                interval_control = (len(self.transformer_blocks) + len(controlnet_block_samples) - 1) // len(
+                    controlnet_block_samples
+                )  # not supporting numpy
                 # For Xlabs ControlNet.
                 if controlnet_blocks_repeat:
                     hidden_states = (
@@ -500,8 +501,11 @@ class FluxTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrig
 
             # controlnet residual
             if controlnet_single_block_samples is not None:
-                interval_control = len(self.single_transformer_blocks) / len(controlnet_single_block_samples)
-                interval_control = ops.ceil(ms.tensor(interval_control)).int().item()  # not supporting numpy
+                interval_control = (
+                    len(self.single_transformer_blocks) + len(controlnet_single_block_samples) - 1
+                ) // len(
+                    controlnet_single_block_samples
+                )  # not supporting numpy
                 hidden_states[:, encoder_hidden_states.shape[1] :, ...] = (
                     hidden_states[:, encoder_hidden_states.shape[1] :, ...]
                     + controlnet_single_block_samples[index_block // interval_control]

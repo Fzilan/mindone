@@ -899,7 +899,7 @@ class FluxControlNetImg2ImgPipeline(DiffusionPipeline, FluxLoraLoaderMixin, From
                     guidance=guidance,
                     pooled_projections=pooled_prompt_embeds,
                     encoder_hidden_states=prompt_embeds,
-                    controlnet_block_samples=controlnet_block_samples,
+                    controlnet_block_samples=ms.mutable(controlnet_block_samples),
                     controlnet_single_block_samples=controlnet_single_block_samples,
                     txt_ids=text_ids,
                     img_ids=latent_image_ids,
