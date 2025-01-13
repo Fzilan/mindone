@@ -26,40 +26,31 @@ from pathlib import Path
 import numpy as np
 import yaml
 from datasets import load_dataset
-from huggingface_hub import create_repo, upload_folder
-from packaging import version
 from PIL import Image
 from tqdm.auto import tqdm
-from transformers import AutoTokenizer, PretrainedConfig
+from transformers import AutoTokenizer
 
 import mindspore as ms
-from mindspore import Tensor, _no_grad, jit_class, nn, ops
-
-from mindspore.amp import DynamicLossScaler, StaticLossScaler
+from mindspore import _no_grad, jit_class, nn, ops
+from mindspore.amp import StaticLossScaler
 from mindspore.dataset import GeneratorDataset, transforms, vision
 
-from mindone.transformers import (
-    CLIPTextModel,
-    T5EncoderModel,
-)
-
-from mindone.diffusers import (
-    AutoencoderKL,
-    FlowMatchEulerDiscreteScheduler,
-    FluxTransformer2DModel,
-)
+from mindone.diffusers import AutoencoderKL, FlowMatchEulerDiscreteScheduler, FluxTransformer2DModel
 from mindone.diffusers.models.controlnet_flux import FluxControlNetModel
 from mindone.diffusers.optimization import get_scheduler
 from mindone.diffusers.pipelines.flux.pipeline_flux_controlnet import FluxControlNetPipeline
-from mindone.diffusers.training_utils import compute_density_for_timestep_sampling
-from mindone.diffusers.utils import make_image_grid
-from mindone.diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
-
-
-from mindone.diffusers.optimization import get_scheduler
-from mindone.diffusers.training_utils import AttrJitWrapper, TrainStep, init_distributed_device, is_master, set_seed
+from mindone.diffusers.training_utils import (
+    AttrJitWrapper,
+    TrainStep,
+    compute_density_for_timestep_sampling,
+    init_distributed_device,
+    is_master,
+    set_seed,
+)
+from mindone.transformers import CLIPTextModel, T5EncoderModel
 
 logger = logging.getLogger(__name__)
+
 
 @jit_class
 class pynative_no_grad(_no_grad):
@@ -79,37 +70,9 @@ class pynative_no_grad(_no_grad):
         if self._pynative:
             super().__exit__(*args)
 
-def log_validation(
-    pipeline, 
-    args, 
-    step,
-    trackers,
-    logging_dir,
-    is_final_validation=False
-):
+
+def log_validation(pipeline, args, step, trackers, logging_dir, is_final_validation=False):
     logger.info("Running validation... ")
-
-    # if not is_final_validation:
-    #     flux_controlnet = accelerator.unwrap_model(flux_controlnet)
-    #     pipeline = FluxControlNetPipeline.from_pretrained(
-    #         args.pretrained_model_name_or_path,
-    #         controlnet=flux_controlnet,
-    #         transformer=flux_transformer,
-    #         torch_dtype=torch.bfloat16,
-    #     )
-    # else:
-    #     flux_controlnet = FluxControlNetModel.from_pretrained(
-    #         args.output_dir, torch_dtype=torch.bfloat16, variant=args.save_weight_dtype
-    #     )
-    #     pipeline = FluxControlNetPipeline.from_pretrained(
-    #         args.pretrained_model_name_or_path,
-    #         controlnet=flux_controlnet,
-    #         transformer=flux_transformer,
-    #         torch_dtype=torch.bfloat16,
-    #     )
-
-    # pipeline.to(accelerator.device)
-    # pipeline.set_progress_bar_config(disable=True)
 
     if args.seed is None:
         generator = None
@@ -158,6 +121,7 @@ def log_validation(
         image_logs.append(
             {"validation_image": validation_image, "images": images, "validation_prompt": validation_prompt}
         )
+
     def get_valid_filename(name):
         import re
 
@@ -166,7 +130,7 @@ def log_validation(
         if s in {"", ".", ".."}:
             raise ValueError(f"Cannot get valid filename from '{name}'")
         return s
-    
+
     tracker_key = "test" if is_final_validation else "validation"
     if is_master(args):
         validation_logging_dir = os.path.join(logging_dir, tracker_key, f"step{step}")
@@ -200,8 +164,6 @@ def log_validation(
 
     logger.info("Validation done.")
     return image_logs
-
-
 
 
 def parse_args(input_args=None):
@@ -365,9 +327,7 @@ def parse_args(input_args=None):
         "--dataloader_num_workers",
         type=int,
         default=1,
-        help=(
-            "Number of subprocesses to use for data loading."
-        ),
+        help=("Number of subprocesses to use for data loading."),
     )
     parser.add_argument(
         "--enable_mindspore_data_sink",
@@ -429,6 +389,7 @@ def parse_args(input_args=None):
             " flag passed with the `accelerate.launch` command. Use this argument to override the accelerate config."
         ),
     )
+    parser.add_argument("--distributed", default=False, action="store_true", help="Enable distributed training")
     parser.add_argument(
         "--set_grads_to_none",
         action="store_true",
@@ -680,13 +641,14 @@ def get_train_dataset(args):
         conditioning_image_column = args.conditioning_image_column
         if conditioning_image_column not in column_names:
             raise ValueError(
-                f"`--conditioning_image_column` value '{args.conditioning_image_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
+                f"`--conditioning_image_column` value '{args.conditioning_image_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"  # noqa E501
             )
 
     train_dataset = dataset["train"].shuffle(seed=args.seed)
     if args.max_train_samples is not None:
         train_dataset = train_dataset.select(range(args.max_train_samples))
     return train_dataset
+
 
 def _get_t5_prompt_embeds(
     tokenizer,
@@ -720,6 +682,7 @@ def _get_t5_prompt_embeds(
 
     return prompt_embeds
 
+
 def _get_clip_prompt_embeds(
     tokenizer,
     text_encoder,
@@ -749,10 +712,10 @@ def _get_clip_prompt_embeds(
     prompt_embeds = prompt_embeds.view(batch_size * num_images_per_prompt, -1)
 
     return prompt_embeds
-    
+
+
 # Adapted from pipelines.FluxControlNetPipeline.encode_prompt
 def encode_prompt(prompt_batch, text_encoders, tokenizers, proportion_empty_prompts, is_train=True):
-
     captions = []
     for caption in prompt_batch:
         if random.random() < proportion_empty_prompts:
@@ -777,7 +740,6 @@ def encode_prompt(prompt_batch, text_encoders, tokenizers, proportion_empty_prom
     )
     dtype = text_encoders[0].dtype
     text_ids = ops.zeros((prompt_embeds.shape[1], 3), dtype=dtype)
-
 
     return prompt_embeds, pooled_prompt_embeds, text_ids
 
@@ -836,7 +798,7 @@ def collate_fn(examples):
     text_ids = np.stack([example["text_ids"] for example in examples]).astype(np.float32)
 
     return pixel_values, conditioning_pixel_values, prompt_ids, pooled_prompt_embeds, text_ids
-    
+
     # {
     #     "pixel_values": pixel_values,
     #     "conditioning_pixel_values": conditioning_pixel_values,
@@ -849,7 +811,6 @@ def main(args):
     args = parse_args()
     ms.set_context(mode=ms.GRAPH_MODE, jit_syntax_level=ms.STRICT)
     init_distributed_device(args)  # read attr distributed, writer attrs rank/local_rank/world_size
-
 
     logging_out_dir = Path(args.output_dir, args.logging_dir)
 
@@ -939,22 +900,6 @@ def main(args):
     text_encoder_one.set_grad(requires_grad=False)
     text_encoder_two.set_grad(requires_grad=False)
 
-    # flux_controlnet.set_train()
-
-    # TODO 用哪些就拎哪些出来
-    # use some pipeline function
-    # flux_controlnet_pipeline = FluxControlNetPipeline(
-    #     scheduler=noise_scheduler,
-    #     vae=vae,
-    #     text_encoder=text_encoder_one,
-    #     tokenizer=tokenizer_one,
-    #     text_encoder_2=text_encoder_two,
-    #     tokenizer_2=tokenizer_two,
-    #     transformer=flux_transformer,
-    #     controlnet=flux_controlnet,
-    # )
-
-
     if args.gradient_checkpointing:
         flux_transformer.enable_gradient_checkpointing()
         flux_controlnet.enable_gradient_checkpointing()
@@ -969,29 +914,29 @@ def main(args):
 
     vae.to(dtype=weight_dtype)
     flux_transformer.to(dtype=weight_dtype)
-    # TODO: check text encoder ?
 
     def compute_embeddings(
-            batch, 
-            proportion_empty_prompts, 
-            text_encoders, 
-            tokenizers,
-            # flux_controlnet_pipeline, 
-            weight_dtype, 
-            is_train=True,
-            ):
+        batch,
+        proportion_empty_prompts,
+        text_encoders,
+        tokenizers,
+        # flux_controlnet_pipeline,
+        weight_dtype,
+        is_train=True,
+    ):
         prompt_batch = batch[args.caption_column]
 
         prompt_embeds, pooled_prompt_embeds, text_ids = encode_prompt(
             prompt_batch, text_encoders, tokenizers, proportion_empty_prompts, is_train
         )
-        prompt_embeds = prompt_embeds.to(dtype=weight_dtype)
-        pooled_prompt_embeds = pooled_prompt_embeds.to(dtype=weight_dtype)
-        text_ids = text_ids.to(dtype=weight_dtype)
 
         # text_ids [512,3] to [bs,512,3]
-        text_ids = text_ids.unsqueeze(0).expand(prompt_embeds.shape[0], -1, -1)
-        return {"prompt_embeds": prompt_embeds, "pooled_prompt_embeds": pooled_prompt_embeds, "text_ids": text_ids}
+        text_ids = text_ids.unsqueeze(0).broadcast_to((prompt_embeds.shape[0], -1, -1))
+        return {
+            "prompt_embeds": prompt_embeds.numpy(),
+            "pooled_prompt_embeds": pooled_prompt_embeds.numpy(),
+            "text_ids": text_ids.numpy(),
+        }
 
     train_dataset = get_train_dataset(args)
     text_encoders = [text_encoder_one, text_encoder_two]
@@ -1013,7 +958,7 @@ def main(args):
     )
 
     # Then get the training dataset ready to be passed to the dataloader.
-    train_dataset = prepare_train_dataset(train_dataset)
+    train_dataset = prepare_train_dataset(train_dataset, args)
 
     class DatasetForMindData:
         def __init__(self, data):
@@ -1030,16 +975,29 @@ def main(args):
         DatasetForMindData(train_dataset),
         column_names=["example"],
         shuffle=True,
-        collate_fn=collate_fn,
-        batch_size=args.train_batch_size,
-        num_workers=args.dataloader_num_workers,
+        shard_id=args.rank,
+        num_shards=args.world_size,
+        num_parallel_workers=args.dataloader_num_workers,
     ).batch(
         batch_size=args.train_batch_size,
         per_batch_map=lambda examples, batch_info: collate_fn(examples),
         input_columns=["example"],
-        output_columns=["c1", "c2", "c3", "c4", "c5"], # pixel_values, conditioning_pixel_values, prompt_ids, pooled_prompt_embeds, text_ids
+        output_columns=[
+            "c1",
+            "c2",
+            "c3",
+            "c4",
+            "c5",
+        ],  # pixel_values, conditioning_pixel_values, prompt_ids, pooled_prompt_embeds, text_ids
         num_parallel_workers=args.dataloader_num_workers,
     )
+
+    del text_encoder_one, text_encoder_two, text_encoders
+    del tokenizer_one, tokenizer_two, tokenizers
+
+    # Print trainable parameters statistics
+    flux_controlnet_trainable = sum(p.numel() for p in flux_controlnet.trainable_params())
+    logger.info(f"{flux_controlnet.__class__.__name__:<30s} ==> Trainable params: {flux_controlnet_trainable:<10,d}")
 
     # Scheduler and math around the number of training steps.
     # Check the PR https://github.com/huggingface/diffusers/pull/8312 for detailed explanation.
@@ -1112,15 +1070,16 @@ def main(args):
         sink_process = ms.data_sink(train_step, train_dataloader)
     else:
         sink_process = None
-    # create pipeline
 
-    pipeline = FluxControlNetPipeline.from_pretrained(
-        args.pretrained_model_name_or_path,
-        controlnet=flux_controlnet,
-        transformer=flux_transformer,
-        torch_dtype=ms.bfloat16,
-    )
-    pipeline.set_progress_bar_config(disable=True)
+    # create pipeline
+    if args.validation_prompt is not None:
+        pipeline = FluxControlNetPipeline.from_pretrained(
+            args.pretrained_model_name_or_path,
+            controlnet=flux_controlnet,
+            transformer=flux_transformer,
+            torch_dtype=ms.bfloat16,
+        )
+        pipeline.set_progress_bar_config(disable=True)
 
     # Train!
     total_batch_size = args.train_batch_size * args.world_size * args.gradient_accumulation_steps
@@ -1156,8 +1115,10 @@ def main(args):
             if is_master(args):
                 logger.info(f"Resuming from checkpoint {path}")
             # TODO: load optimizer & grad scaler etc. like accelerator.load_state
-            input_model_file = os.path.join(args.output_dir, path, "pytorch_model.ckpt")
-            ms.load_param_into_net(flux_controlnet, ms.load_checkpoint(input_model_file), strict_load=True)
+            input_model_file = os.path.join(args.output_dir, path, "diffusion_pytorch_model.safetensors")
+            ms.load_param_into_net(
+                flux_controlnet, ms.load_checkpoint(input_model_file, format="safetensors"), strict_load=True
+            )
             global_step = int(path.split("-")[1])
 
             initial_global_step = global_step
@@ -1173,8 +1134,6 @@ def main(args):
         disable=not is_master(args),
     )
     train_dataloader_iter = train_dataloader.create_tuple_iterator(num_epochs=args.num_train_epochs - first_epoch)
-
-
 
     for epoch in range(first_epoch, args.num_train_epochs):
         flux_controlnet.set_train(True)
@@ -1218,8 +1177,8 @@ def main(args):
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
                         # TODO: save optimizer & grad scaler etc. like accelerator.save_state
                         os.makedirs(save_path, exist_ok=True)
-                        output_model_file = os.path.join(save_path, "pytorch_model.ckpt")
-                        ms.save_checkpoint(flux_controlnet, output_model_file)
+                        output_model_file = os.path.join(save_path, "pytorch_model.safetensors")
+                        ms.save_checkpoint(flux_controlnet, output_model_file, format="safetensors")
                         logger.info(f"Saved state to {save_path}")
 
                     if args.validation_prompt is not None and global_step % args.validation_steps == 0:
@@ -1227,7 +1186,6 @@ def main(args):
                             pipeline=pipeline,
                             args=args,
                             trackers=trackers,
-
                             weight_dtype=weight_dtype,
                             step=global_step,
                         )
@@ -1252,7 +1210,6 @@ def main(args):
             flux_controlnet.save_pretrained(args.output_dir)
         # Run a final round of validation.
         # Setting `vae`, `unet`, and `controlnet` to None to load automatically from `args.output_dir`.
-        image_logs = None
         if args.validation_prompt is not None:
             log_validation(
                 pipeline=pipeline,
@@ -1266,6 +1223,7 @@ def main(args):
     for tracker_name, tracker in trackers.items():
         if tracker_name == "tensorboard":
             tracker.close()
+
 
 class TrainStepForFluxControlNet(TrainStep):
     def __init__(
@@ -1299,42 +1257,55 @@ class TrainStepForFluxControlNet(TrainStep):
 
         self.noise_scheduler = noise_scheduler
         self.noise_scheduler_num_train_timesteps = noise_scheduler.config.num_train_timesteps
-        self.noise_scheduler_prediction_type = noise_scheduler.config.prediction_type
         self.weight_dtype = weight_dtype
         self.args = AttrJitWrapper(**vars(args))
-    
+
+    def get_sigmas(self, indices, n_dim=4, dtype=ms.float32):
+        """
+        origin `get_sigmas` which uses timesteps to get sigmas might be not supported
+        in mindspore Graph mode, thus we rewrite `get_sigmas` to get sigma directly
+        from indices which calls less ops and could run in mindspore Graph mode.
+        """
+        sigma = self.noise_scheduler.sigmas[indices].to(dtype=dtype)
+        while len(sigma.shape) < n_dim:
+            sigma = sigma.unsqueeze(-1)
+        return sigma
+
     def forward(self, pixel_values, conditioning_pixel_values, prompt_ids, pooled_prompt_embeds, text_ids):
         # Convert images to latent space
         # vae encode
         with pynative_no_grad():
-            pixel_latents_tmp = self.vae.diag_gauss_dist.sample(self.vae.encode(pixel_values)[0])
+            pixel_latents_tmp = self.vae.diag_gauss_dist.sample(self.vae.encode(pixel_values.to(self.vae_dtype))[0])
             pixel_latents_tmp = (pixel_latents_tmp - self.vae_config_shift_factor) * self.vae_config_scaling_factor
-            pixel_latents = FluxControlNetPipeline._pack_latents(
-                pixel_latents_tmp,
-                pixel_values.shape[0],
-                pixel_latents_tmp.shape[1],
-                pixel_latents_tmp.shape[2],
-                pixel_latents_tmp.shape[3],
-            )
 
+        pixel_latents_tmp = pixel_latents_tmp.to(self.weight_dtype)
+        pixel_latents = FluxControlNetPipeline._pack_latents(
+            pixel_latents_tmp,
+            pixel_values.shape[0],
+            pixel_latents_tmp.shape[1],
+            pixel_latents_tmp.shape[2],
+            pixel_latents_tmp.shape[3],
+        )
+
+        with pynative_no_grad():
             control_values = conditioning_pixel_values.to(dtype=self.weight_dtype)
-            control_latents = self.vae.diag_gauss_dist.sample(self.vae.encode(control_values)[0])
+            control_latents = self.vae.diag_gauss_dist.sample(self.vae.encode(control_values.to(self.vae_dtype))[0])
 
-            control_latents = (control_latents - self.vae_config_shift_factor) * self.vae_config_scaling_factor
-            control_image = FluxControlNetPipeline._pack_latents(
-                control_latents,
-                control_values.shape[0],
-                control_latents.shape[1],
-                control_latents.shape[2],
-                control_latents.shape[3],
-            )
+        control_latents = (control_latents - self.vae_config_shift_factor) * self.vae_config_scaling_factor
+        control_image = FluxControlNetPipeline._pack_latents(
+            control_latents,
+            control_values.shape[0],
+            control_latents.shape[1],
+            control_latents.shape[2],
+            control_latents.shape[3],
+        )
 
-            latent_image_ids = FluxControlNetPipeline._prepare_latent_image_ids(
-                batch_size=pixel_latents_tmp.shape[0], # no use
-                height=pixel_latents_tmp.shape[2],
-                width=pixel_latents_tmp.shape[3],
-                dtype=pixel_values.dtype,
-            )
+        latent_image_ids = FluxControlNetPipeline._prepare_latent_image_ids(
+            batch_size=pixel_latents_tmp.shape[0],  # no use
+            height=pixel_latents_tmp.shape[2],
+            width=pixel_latents_tmp.shape[3],
+            dtype=self.weight_dtype,
+        )
 
         bsz = pixel_latents.shape[0]
         noise = ops.randn_like(pixel_latents).to(dtype=self.weight_dtype)
@@ -1351,8 +1322,8 @@ class TrainStepForFluxControlNet(TrainStep):
         timesteps = self.noise_scheduler.timesteps[indices]
 
         # Add noise according to flow matching.
-        sigmas = self.get_sigmas(timesteps, n_dim=pixel_latents.ndim, dtype=pixel_latents.dtype)
-        noisy_model_input = (1.0 - sigmas) * pixel_latents + sigmas * noise
+        sigmas = self.get_sigmas(indices, n_dim=pixel_latents.ndim, dtype=pixel_latents.dtype)
+        noisy_model_input = sigmas * noise + (1.0 - sigmas) * pixel_latents
 
         # handle guidance
         if self.flux_transformer_config_guidance_embeds:
@@ -1371,7 +1342,7 @@ class TrainStepForFluxControlNet(TrainStep):
             guidance=guidance_vec,
             pooled_projections=pooled_prompt_embeds.to(dtype=self.weight_dtype),
             encoder_hidden_states=prompt_ids.to(dtype=self.weight_dtype),
-            txt_ids=text_ids[0].to(dtype=self.weight_dtype), # TODO:check if have [0]
+            txt_ids=text_ids[0].to(dtype=self.weight_dtype),  # TODO:check if have [0]
             img_ids=latent_image_ids,
             return_dict=False,
         )
@@ -1390,17 +1361,16 @@ class TrainStepForFluxControlNet(TrainStep):
             ]
             if controlnet_single_block_samples is not None
             else None,
-            txt_ids=text_ids[0].to(dtype=self.weight_dtype), # TODO:check if have [0]
+            txt_ids=text_ids[0].to(dtype=self.weight_dtype),  # TODO:check if have [0]
             img_ids=latent_image_ids,
             return_dict=False,
         )[0]
 
         loss = ops.mse_loss(noise_pred.float(), (noise - pixel_latents).float(), reduction="mean")
+        loss = self.scale_loss(loss)
 
-        # # Check if the gradient of each model parameter contains NaN
-        # for name, param in self.flux_controlnet.parameters_and_names():
-        #     if param.grad is not None and ms.isnan(param.grad).any():
-        #         logger.error(f"Gradient for {name} contains NaN!")
+        return loss, noise_pred
+
 
 if __name__ == "__main__":
     args = parse_args()
