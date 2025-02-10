@@ -681,7 +681,7 @@ class SiglipMultiheadAttentionPoolingHead(nn.Cell):
 
     def construct(self, hidden_state):
         batch_size = hidden_state.shape[0]
-        probe = self.probe.repeat(batch_size, 1, 1)
+        probe = self.probe.tile((batch_size, 1, 1))
 
         hidden_state = self.attention(probe, hidden_state, hidden_state)[0]
 
