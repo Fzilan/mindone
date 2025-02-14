@@ -34,8 +34,6 @@ import mindspore as ms
 from mindspore import _no_grad, jit_class, nn, ops
 from mindspore.amp import StaticLossScaler
 from mindspore.dataset import GeneratorDataset, transforms, vision
-from mindspore.nn.wrap.loss_scale import DynamicLossScaleUpdateCell, FixedLossScaleUpdateCell
-
 
 from mindone.diffusers import AutoencoderKL, FlowMatchEulerDiscreteScheduler, FluxTransformer2DModel
 from mindone.diffusers.models.controlnet_flux import FluxControlNetModel
@@ -331,16 +329,6 @@ def parse_args(input_args=None):
         type=int,
         default=1,
         help=("Number of subprocesses to use for data loading."),
-    )
-    parser.add_argument(
-        "--enable_mindspore_data_sink",
-        action="store_true",
-        help=(
-            "Whether or not to enable `Data Sinking` feature from MindData which boosting data "
-            "fetching and transferring from host to device. For more information, see "
-            "https://www.mindspore.cn/tutorials/experts/en/r2.2/optimize/execution_opt.html#data-sinking. "
-            "Note: To avoid breaking the iteration logic of the training, the size of data sinking is set to 1."
-        ),
     )
     parser.add_argument("--adam_beta1", type=float, default=0.9, help="The beta1 parameter for the Adam optimizer.")
     parser.add_argument("--adam_beta2", type=float, default=0.999, help="The beta2 parameter for the Adam optimizer.")
@@ -855,10 +843,10 @@ def collate_fn(examples):
 def main():
     args = parse_args()
     ms.set_context(
-        mode=ms.GRAPH_MODE, 
-        jit_syntax_level=ms.STRICT,
+        mode=ms.GRAPH_MODE,
+        # jit_syntax_level=ms.STRICT,
         jit_config={"jit_level": args.jit_level},
-        )
+    )
 
     init_distributed_device(args)  # read attr distributed, writer attrs rank/local_rank/world_size
 
@@ -1204,16 +1192,16 @@ def main():
             else enumerate(train_dataloader_iter)
         ):
             if args.enable_mindspore_data_sink:
-                loss, model_pred = sink_process()
+                loss, _, _ = sink_process()
             else:
-                loss, model_pred = train_step(*batch)
+                loss, _, _ = train_step(*batch)
 
             # Checks if the accelerator has performed an optimization step behind the scenes
-            if train_step.sync_gradients:
+            if train_step.accum_steps == 1 or train_step.cur_accum_step.item() == 0:
                 progress_bar.update(1)
                 global_step += 1
 
-                if global_step % args.checkpointing_steps == 0: 
+                if global_step % args.checkpointing_steps == 0:
                     if is_master(args):
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
                         if args.checkpoints_total_limit is not None:
