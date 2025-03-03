@@ -32,7 +32,6 @@ from transformers import AutoTokenizer
 
 import mindspore as ms
 from mindspore import _no_grad, jit_class, nn, ops
-from mindspore.amp import StaticLossScaler
 from mindspore.dataset import GeneratorDataset, transforms, vision
 
 from mindone.diffusers import AutoencoderKL, FlowMatchEulerDiscreteScheduler, FluxTransformer2DModel
@@ -41,7 +40,6 @@ from mindone.diffusers.optimization import get_scheduler
 from mindone.diffusers.pipelines.flux.pipeline_flux_controlnet import FluxControlNetPipeline
 from mindone.diffusers.training_utils import (
     AttrJitWrapper,
-    TrainStep,
     compute_density_for_timestep_sampling,
     init_distributed_device,
     is_master,
@@ -70,6 +68,23 @@ class pynative_no_grad(_no_grad):
     def __exit__(self, *args):
         if self._pynative:
             super().__exit__(*args)
+
+
+def do_ckpt_combine_online(net_to_save, optimizer_parallel_group):
+    """
+    Combine the model parameters when saving weighs during zero3 training.
+    """
+    new_net_to_save = []
+    all_gather_op = ops.AllGather(optimizer_parallel_group)
+
+    #  net_to_save is a dict with elements as {"name":name, "data": data}
+    for param in net_to_save:
+        if param["data"].parallel_optimizer:
+            new_data = ms.Tensor(all_gather_op(param["data"]).asnumpy())
+        else:
+            new_data = ms.Tensor(param["data"].asnumpy())
+        new_net_to_save.append({"name": param["data"], "data": new_data})
+    return new_net_to_save
 
 
 def log_validation(pipeline, args, step, trackers, logging_dir, is_final_validation=False):
@@ -832,19 +847,11 @@ def collate_fn(examples):
 
     return pixel_values, conditioning_pixel_values, prompt_ids, pooled_prompt_embeds, text_ids
 
-    # {
-    #     "pixel_values": pixel_values,
-    #     "conditioning_pixel_values": conditioning_pixel_values,
-    #     "prompt_ids": prompt_ids,
-    #     "unet_added_conditions": {"pooled_prompt_embeds": pooled_prompt_embeds, "time_ids": text_ids},
-    # }
-
 
 def main():
     args = parse_args()
     ms.set_context(
         mode=ms.GRAPH_MODE,
-        # jit_syntax_level=ms.STRICT,
         jit_config={"jit_level": args.jit_level},
     )
 
@@ -1146,6 +1153,11 @@ def main():
 
     # Potentially load in the weights and states from a previous save
     if args.resume_from_checkpoint:
+        if args.zero_stage == 3:
+            raise NotImplementedError(
+                "currently we save combined checkpoint during zero3 training. resume not implemented yet"
+            )
+
         if args.resume_from_checkpoint != "latest":
             path = os.path.basename(args.resume_from_checkpoint)
         else:
@@ -1200,8 +1212,18 @@ def main():
             if train_step.accum_steps == 1 or train_step.cur_accum_step.item() == 0:
                 progress_bar.update(1)
                 global_step += 1
+                prefix = "flux_controlnet."
 
                 if global_step % args.checkpointing_steps == 0:
+                    net_to_save = [
+                        {"name": p.name[len(prefix) :], "data": p} for p in flux_controlnet.trainable_params()
+                    ]
+                    net_to_save = (
+                        net_to_save
+                        if args.zero_stage != 3
+                        else do_ckpt_combine_online(net_to_save, train_step.zero_helper.optimizer_parallel_group)
+                    )
+
                     if is_master(args):
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
                         if args.checkpoints_total_limit is not None:
@@ -1226,7 +1248,7 @@ def main():
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
                         # TODO: save optimizer & grad scaler etc. like accelerator.save_state
                         os.makedirs(save_path, exist_ok=True)
-                        output_model_file = os.path.join(save_path, "pytorch_model.safetensors")
+                        output_model_file = os.path.join(save_path, "diffusion_pytorch_model.safetensors")
                         ms.save_checkpoint(flux_controlnet, output_model_file, format="safetensors")
                         logger.info(f"Saved state to {save_path}")
 
