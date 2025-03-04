@@ -83,7 +83,7 @@ def do_ckpt_combine_online(net_to_save, optimizer_parallel_group):
             new_data = ms.Tensor(all_gather_op(param["data"]).asnumpy())
         else:
             new_data = ms.Tensor(param["data"].asnumpy())
-        new_net_to_save.append({"name": param["data"], "data": new_data})
+        new_net_to_save.append({"name": param["name"], "data": new_data})
     return new_net_to_save
 
 
@@ -1237,7 +1237,7 @@ def main():
                         # TODO: save optimizer & grad scaler etc. like accelerator.save_state
                         os.makedirs(save_path, exist_ok=True)
                         output_model_file = os.path.join(save_path, "diffusion_pytorch_model.safetensors")
-                        ms.save_checkpoint(flux_controlnet, output_model_file, format="safetensors")
+                        ms.save_checkpoint(net_to_save, output_model_file, format="safetensors")
                         logger.info(f"Saved state to {save_path}")
 
                     if args.validation_prompt is not None and global_step % args.validation_steps == 0:
