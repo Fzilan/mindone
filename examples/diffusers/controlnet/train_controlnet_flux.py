@@ -1096,7 +1096,7 @@ def main():
             args.pretrained_model_name_or_path,
             controlnet=flux_controlnet,
             transformer=flux_transformer,
-            torch_dtype=ms.bfloat16,
+            mindspore_dtype=ms.bfloat16,
         )
 
     # Prepare everything with our `accelerator`.
@@ -1237,6 +1237,7 @@ def main():
                         # TODO: save optimizer & grad scaler etc. like accelerator.save_state
                         os.makedirs(save_path, exist_ok=True)
                         output_model_file = os.path.join(save_path, "diffusion_pytorch_model.safetensors")
+                        flux_controlnet.save_config(output_model_file)
                         ms.save_checkpoint(net_to_save, output_model_file, format="safetensors")
                         logger.info(f"Saved state to {save_path}")
 
@@ -1255,18 +1256,32 @@ def main():
                     tracker.add_scalars("train", logs, global_step)
             if global_step >= args.max_train_steps:
                 break
+
     # Create the pipeline using using the trained modules and save it.
+    save_weight_dtype = ms.float32
+    if args.save_weight_dtype == "fp16":
+        save_weight_dtype = ms.float16
+    elif args.save_weight_dtype == "bf16":
+        save_weight_dtype = ms.bfloat16
+    flux_controlnet.to(save_weight_dtype)
+
+    if args.zero_stage != 3:
+        if is_master(args):
+            if args.save_weight_dtype != "fp32":
+                flux_controlnet.save_pretrained(args.output_dir, variant=args.save_weight_dtype)
+            else:
+                flux_controlnet.save_pretrained(args.output_dir)
+
+    else:
+        prefix = "flux_controlnet."
+        net_to_save = [{"name": p.name[len(prefix) :], "data": p} for p in flux_controlnet.trainable_params()]
+        net_to_save = do_ckpt_combine_online(net_to_save, train_step.zero_helper.optimizer_parallel_group)
+        if is_master(args):
+            flux_controlnet.save_config(args.output_dir)
+            output_model_file = os.path.join(args.output_dir, "diffusion_pytorch_model.safetensors")
+            ms.save_checkpoint(net_to_save, output_model_file, format="safetensors")
+
     if is_master(args):
-        save_weight_dtype = ms.float32
-        if args.save_weight_dtype == "fp16":
-            save_weight_dtype = ms.float16
-        elif args.save_weight_dtype == "bf16":
-            save_weight_dtype = ms.bfloat16
-        flux_controlnet.to(save_weight_dtype)
-        if args.save_weight_dtype != "fp32":
-            flux_controlnet.save_pretrained(args.output_dir, variant=args.save_weight_dtype)
-        else:
-            flux_controlnet.save_pretrained(args.output_dir)
         # Run a final round of validation.
         # Setting `vae`, `unet`, and `controlnet` to None to load automatically from `args.output_dir`.
         if args.validation_prompt is not None:
@@ -1417,7 +1432,6 @@ class FluxControlNetWithLoss(nn.Cell):
         )[0]
 
         loss = ops.mse_loss(noise_pred.float(), (noise - pixel_latents).float(), reduction="mean")
-        # loss = self.scale_loss(loss)
 
         return loss
 
