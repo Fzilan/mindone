@@ -32,6 +32,7 @@ from transformers import AutoTokenizer
 
 import mindspore as ms
 from mindspore import _no_grad, jit_class, nn, ops
+from mindspore.amp import auto_mixed_precision
 from mindspore.dataset import GeneratorDataset, transforms, vision
 
 from mindone.diffusers import AutoencoderKL, FlowMatchEulerDiscreteScheduler, FluxTransformer2DModel
@@ -417,6 +418,18 @@ def parse_args(input_args=None):
             "operator fusion optimizations, using an operator-by-operator execution method. This is an experimental "
             "optimization level, which is continuously being improved. O2: Enables extreme performance optimization, "
             "using a sinking execution method. Only effective when args.mindspore_mode is 0"
+        ),
+    )
+    parser.add_argument(
+        "--amp_level",
+        type=str,
+        default="O2",
+        choices=["O0", "O1", "O2", "O3"],
+        help=(
+            "Level of auto mixed precision(amp). Supports [O0, O1, O2, O3]. O0: Do not change. O1: Convert cells"
+            "and operators in whitelist to lower precision operations, and keep full precision operations for "
+            "the rest. O2: Keep full precision operations for cells and operators in blacklist, and convert "
+            "the rest to lower precision operations. O3: Cast network to lower precision."
         ),
     )
     parser.add_argument(
@@ -948,6 +961,11 @@ def main():
     vae.to(dtype=weight_dtype)
     flux_transformer.to(dtype=weight_dtype)
 
+    # Make sure the trainable params are in float32. and do AMP wrapper manually
+    if weight_dtype != ms.float32:
+        # cast_training_params([flux_controlnet], dtype=ms.float32)
+        flux_controlnet = auto_mixed_precision(flux_controlnet, amp_level=args.amp_level, dtype=weight_dtype)
+
     def compute_embeddings(
         batch,
         proportion_empty_prompts,
@@ -1052,6 +1070,7 @@ def main():
         num_cycles=args.lr_num_cycles,
         power=args.lr_power,
     )
+
     # Optimizer creation
     params_to_optimize = flux_controlnet.trainable_params()
     optimizer = nn.AdamWeightDecay(
@@ -1099,10 +1118,10 @@ def main():
             mindspore_dtype=ms.bfloat16,
         )
 
-    # Prepare everything with our `accelerator`.
-    flux_controlnet.to_float(weight_dtype)
-    for _, cell in flux_controlnet.cells_and_names():
-        cell.to_float(weight_dtype)
+    # # Prepare everything with our `accelerator`.
+    # flux_controlnet.to_float(weight_dtype)
+    # for _, cell in flux_controlnet.cells_and_names():
+    #     cell.to_float(weight_dtype)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
