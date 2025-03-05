@@ -64,9 +64,10 @@ python train_controlnet_flux.py \
     --validation_steps=100 \
     --checkpointing_steps=200 \
     --train_batch_size=1 \
-    --gradient_accumulation_steps=4 \
+    --gradient_accumulation_steps=1 \
     --num_double_layers=4 \
     --num_single_layers=0 \
+    --dataloader_num_workers=8 \
     --seed=42
 ```
 
@@ -133,6 +134,7 @@ msrun --worker_num=2 --local_worker_num=2 --log_dir=$OUTPUT_DIR train_controlnet
     --gradient_accumulation_steps=4 \
     --num_double_layers=4 \
     --num_single_layers=0 \
+    --dataloader_num_workers=8 \
     --seed=42 \
     --zero_stage=3 \
     --distributed

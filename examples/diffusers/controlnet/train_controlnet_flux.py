@@ -32,7 +32,6 @@ from transformers import AutoTokenizer
 
 import mindspore as ms
 from mindspore import _no_grad, jit_class, nn, ops
-from mindspore.amp import auto_mixed_precision
 from mindspore.dataset import GeneratorDataset, transforms, vision
 
 from mindone.diffusers import AutoencoderKL, FlowMatchEulerDiscreteScheduler, FluxTransformer2DModel
@@ -48,6 +47,7 @@ from mindone.diffusers.training_utils import (
     set_seed,
 )
 from mindone.transformers import CLIPTextModel, T5EncoderModel
+from mindone.utils.amp import auto_mixed_precision
 
 logger = logging.getLogger(__name__)
 
@@ -1117,11 +1117,6 @@ def main():
             transformer=flux_transformer,
             mindspore_dtype=ms.bfloat16,
         )
-
-    # # Prepare everything with our `accelerator`.
-    # flux_controlnet.to_float(weight_dtype)
-    # for _, cell in flux_controlnet.cells_and_names():
-    #     cell.to_float(weight_dtype)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
