@@ -1237,7 +1237,7 @@ def main():
                         # TODO: save optimizer & grad scaler etc. like accelerator.save_state
                         os.makedirs(save_path, exist_ok=True)
                         output_model_file = os.path.join(save_path, "diffusion_pytorch_model.safetensors")
-                        flux_controlnet.save_config(output_model_file)
+                        flux_controlnet.save_config(save_path)
                         ms.save_checkpoint(net_to_save, output_model_file, format="safetensors")
                         logger.info(f"Saved state to {save_path}")
 
