@@ -961,7 +961,6 @@ from .models.ministral import (
     MinistralForTokenClassification,
     MinistralModel,
     MinistralPreTrainedModel,
-from .models.ministral3 import (\n    Ministral3ForCausalLM,\n    Ministral3ForQuestionAnswering,\n    Ministral3ForSequenceClassification,\n    Ministral3ForTokenClassification,\n    Ministral3Model,\n    Ministral3PreTrainedModel,\n)
 )
 from .models.mistral import (
     MistralForCausalLM,
