@@ -955,14 +955,7 @@ from .models.mimi import MimiModel, MimiPreTrainedModel
 from .models.minicpm4 import MiniCPMForCausalLM, MiniCPMForSequenceClassification, MiniCPMModel
 from .models.minicpmv_4_5 import MiniCPMVImageProcessor, MiniCPMVProcessor, MiniCPMVTokenizerFast
 from .models.ministral import (
-from .models.ministral3 import (
-    Ministral3ForCausalLM,
-    Ministral3ForQuestionAnswering,
-    Ministral3ForSequenceClassification,
-    Ministral3ForTokenClassification,
-    Ministral3Model,
-    Ministral3PreTrainedModel,
-)    MinistralForCausalLM,
+    MinistralForCausalLM,
     MinistralForQuestionAnswering,
     MinistralForSequenceClassification,
     MinistralForTokenClassification,
