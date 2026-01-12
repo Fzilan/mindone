@@ -205,7 +205,7 @@ CONFIG_MAPPING_NAMES = OrderedDict(
         ("metaclip_2", "MetaClip2Config"),
         ("mimi", "MimiConfig"),
         ("ministral", "MinistralConfig"),
-        ("mistral", "MistralConfig"),
+        ("ministral3", "Ministral3Config"),        ("mistral", "MistralConfig"),
         ("mistral3", "Mistral3Config"),
         ("mixtral", "MixtralConfig"),
         ("mgp-str", "MgpstrConfig"),
